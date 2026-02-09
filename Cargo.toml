@@ -9,7 +9,7 @@ embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy.git", bran
 embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", branch = "main", features = ["defmt"] }
 embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", branch = "main", features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
 embassy-time = { git = "https://github.com/embassy-rs/embassy.git", branch = "main", features = ["defmt", "defmt-timestamp-uptime"] }
-embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", branch = "main", default-features = false, features = ["defmt", "time-driver", "critical-section-impl", "rp235xa"] }
+embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", branch = "main", default-features = false, features = ["defmt", "time-driver", "critical-section-impl", "rp235xa", "binary-info"] }
 embassy-usb = { git = "https://github.com/embassy-rs/embassy.git", branch = "main", features = ["defmt"] }
 embassy-futures = { git = "https://github.com/embassy-rs/embassy.git", branch = "main" }
 
@@ -33,7 +33,9 @@ cortex-m-rt = "0.7.0"
 critical-section = "1.1"
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 display-interface-spi = "0.5.0"
+display-interface-i2c = "0.5.0"
 embedded-graphics = "0.8.1"
+ssd1306 = "0.10.0"
 mipidsi = "0.8.0"
 display-interface = "0.5.0"
 byte-slice-cast = { version = "1.2.0", default-features = false }
@@ -57,7 +59,6 @@ embedded-sdmmc = "0.7.0"
 
 # If you're not going to use a Board Support Package you'll need these:
 rp235x-hal = { version = "0.3", features = [
-  "critical-section-impl",
   "binary-info",
 ] }
 
