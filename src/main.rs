@@ -1,6 +1,8 @@
-//! Blinks the LED on a Pico board
-//!
-//! This will blink an LED attached to GP25, which is the pin the Pico uses for the on-board LED.
+//  Created by Hasebe Masahiko on 2026/02/11.
+//  Copyright (c) 2026 Hasebe Masahiko.
+//  Released under the MIT license
+//  https://opensource.org/licenses/mit-license.php
+//
 #![no_std]
 #![no_main]
 
@@ -17,8 +19,14 @@ use defmt::{error, info, unwrap};
 use rp235x_hal::{self as hal};
 
 use embassy_rp::bind_interrupts;
-use embassy_rp::peripherals::I2C1;
+use embassy_rp::peripherals::{DMA_CH0, I2C1, PIO0, USB};
 use embassy_rp::i2c::{self, I2c, Config as I2cConfig, InterruptHandler as I2cInterruptHandler};
+use embassy_rp::usb::{Driver, InterruptHandler as UsbInterruptHandler};
+use embassy_rp::pio::{InterruptHandler as PioInterruptHandler, Pio};
+use embassy_rp::pio_programs::ws2812::PioWs2812Program;
+use embassy_rp::dma::InterruptHandler as DmaInterruptHandler;
+use embassy_usb::{Builder, Config};
+use embassy_usb::class::midi::{MidiClass, Sender};
 
 use embassy_rp::gpio::{Level, Output};
 use embedded_hal_bus::i2c::CriticalSectionDevice;
@@ -26,7 +34,21 @@ use embedded_hal::i2c::I2c as _;
 
 bind_interrupts!(struct Irqs {
     I2C1_IRQ => I2cInterruptHandler<I2C1>;
+    USBCTRL_IRQ => UsbInterruptHandler<USB>;
+    PIO0_IRQ_0 => PioInterruptHandler<PIO0>;
+    DMA_IRQ_0 => DmaInterruptHandler<DMA_CH0>;
 });
+
+
+
+macro_rules! make_static {
+    ($t:ty, $val:expr) => {{
+        static STATIC_CELL: StaticCell<$t> = StaticCell::new();
+        #[allow(unused_unsafe)]
+        unsafe { STATIC_CELL.init($val) }
+    }};
+}
+
 
 use cortex_m::asm;
 use embedded_graphics::pixelcolor::BinaryColor;
@@ -177,14 +199,47 @@ fn main() -> ! {
     // LEDピン
     let led = Output::new(p.PIN_25, Level::Low);
 
+    // USB Driver
+    let driver = Driver::new(p.USB, Irqs);
+    let mut config = Config::new(0xc0de, 0xcafe);
+    config.manufacturer = Some("Embassy");
+    config.product = Some("USB MIDI Device");
+    config.serial_number = Some("12345678");
+    config.max_power = 100;
+    config.max_packet_size_0 = 64;
+
+    // Buffers
+    let config_descriptor = make_static!([u8; 256], [0; 256]);
+    let bos_descriptor = make_static!([u8; 256], [0; 256]);
+    let msos_descriptor = make_static!([u8; 256], [0; 256]);
+    let control_buf = make_static!([u8; 64], [0; 64]);
+
+    let mut builder = Builder::new(
+        driver,
+        config,
+        config_descriptor,
+        bos_descriptor,
+        msos_descriptor,
+        control_buf,
+    );
+
+    // Midi Class
+    let class = MidiClass::new(&mut builder, 1, 1, 64);
+
     let mut i2c_config = I2cConfig::default();
     i2c_config.frequency = 400_000;
     let i2c = I2c::new_async(p.I2C1, p.PIN_7, p.PIN_6, Irqs, i2c_config);
 
+    // PIO / Neopixel
+    let Pio { mut common, sm0, .. } = Pio::new(p.PIO0, Irqs);
+    let ws2812_program = make_static!(PioWs2812Program<'static, PIO0>, PioWs2812Program::new(&mut common));
+
     // Core1起動
     spawn_core1(
         p.CORE1,
+
         unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
+
         move || {
             let executor1 = EXECUTOR1.init(Executor::new());
             executor1.run(|spawner| {
@@ -194,20 +249,81 @@ fn main() -> ! {
         },
     );
 
+    let usb = builder.build();
+    let (sender, _reader) = class.split();
+
     // Core0もExecutorを回す（必須）
     let executor0 = EXECUTOR0.init(Executor::new());
     executor0.run(|spawner| {
-        spawner.spawn(unwrap!(core0_dummy_task()));
+        spawner.spawn(unwrap!(usb_task(usb)));
+        spawner.spawn(unwrap!(midi_task(sender)));
+        // Neopixel on D0 (GP26)
+        spawner.spawn(unwrap!(neopixel_task(common, sm0, p.DMA_CH0, p.PIN_26, ws2812_program)));
     });
 }
 
 #[embassy_executor::task]
-async fn core0_dummy_task() {
-    info!("Core0 task started");
+async fn neopixel_task(
+    mut common: embassy_rp::pio::Common<'static, PIO0>,
+    sm: embassy_rp::pio::StateMachine<'static, PIO0, 0>,
+    dma: Peri<'static, DMA_CH0>,
+    pin: Peri<'static, embassy_rp::peripherals::PIN_26>,
+    program: &'static PioWs2812Program<'static, PIO0>,
+) {
+
+    use devices::ws2812::wheel;
+    use embassy_rp::pio_programs::ws2812::RgbwPioWs2812;
+    use smart_leds::RGBW;
+    use embassy_time::Ticker;
+
+    info!("Neopixel task started (GP26 / RGBW)");
+    
+    // RgbwPioWs2812 is needed for RGBW
+    let mut ws2812 = RgbwPioWs2812::new(&mut common, sm, dma, Irqs, pin, program);
+
+    let mut ticker = Ticker::every(embassy_time::Duration::from_millis(20));
+    let mut j: i32 = 0;
+    
+    // LEDの数。今回は1個を想定
+    const NUM_LEDS: usize = 1;
+    let mut data = [RGBW::default(); NUM_LEDS];
+
     loop {
-        // Core0は死活監視ログを出すだけ
-        info!("Core0 is alive");
-        Timer::after_millis(1000).await;
+        for i in 0..NUM_LEDS {
+            let color = wheel(j.wrapping_add(i as i32 * 256 / NUM_LEDS as i32) as u8);
+            // Convert RGB8 to RGBW (White is 0 for rainbow effect)
+            data[i] = RGBW { r: color.r, g: color.g, b: color.b, a: smart_leds::White(0) };
+        }
+        ws2812.write(&data).await;
+        
+        j = j.wrapping_add(1);
+        ticker.next().await;
+    }
+}
+
+#[embassy_executor::task]
+async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, Driver<'static, USB>>) {
+    usb.run().await;
+}
+
+#[embassy_executor::task]
+async fn midi_task(mut sender: Sender<'static, Driver<'static, USB>>) {
+    info!("MIDI task started");
+    let mut pitch = 60u8;
+    loop {
+        // Note On (Channel 0, Note 60, Velocity 64)
+        info!("Note On {}", pitch);
+        let packet = [0x09, 0x90, pitch, 64]; 
+        sender.write_packet(&packet).await.unwrap();
+        Timer::after_millis(500).await;
+        
+        // Note Off
+        info!("Note Off {}", pitch);
+        let packet = [0x08, 0x80, pitch, 64];
+        sender.write_packet(&packet).await.unwrap();
+        Timer::after_millis(500).await;
+        
+        pitch = if pitch < 72 { pitch + 1 } else { 60 };
     }
 }
 
