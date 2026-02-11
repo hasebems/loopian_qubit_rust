@@ -84,10 +84,10 @@ fn led_off(led: &mut Output<'static>) {
 }
 
 #[allow(dead_code)]
-enum Fatal {
-    ProbeFail,
-    InitFail,
-    FlushFail,
+enum FatalFail {
+    Probe,
+    Init,
+    Flush,
 }
 
 fn delay_ms_blocking(ms: u32) {
@@ -97,12 +97,12 @@ fn delay_ms_blocking(ms: u32) {
 }
 
 #[allow(dead_code)]
-fn fatal_blink_forever(led: &mut Output<'static>, stage: u8, kind: Fatal) -> ! {
+fn fatal_blink_forever(led: &mut Output<'static>, stage: u8, kind: FatalFail) -> ! {
     STAGE.store(stage, Ordering::Relaxed);
     loop {
         match kind {
             // 2回チカチカ → 長休み
-            Fatal::ProbeFail => {
+            FatalFail::Probe => {
                 for _ in 0..2 {
                     led_on(led);
                     delay_ms_blocking(80);
@@ -112,7 +112,7 @@ fn fatal_blink_forever(led: &mut Output<'static>, stage: u8, kind: Fatal) -> ! {
                 delay_ms_blocking(1_000);
             }
             // 3回チカチカ → 長休み
-            Fatal::InitFail => {
+            FatalFail::Init => {
                 for _ in 0..3 {
                     led_on(led);
                     delay_ms_blocking(80);
@@ -122,7 +122,7 @@ fn fatal_blink_forever(led: &mut Output<'static>, stage: u8, kind: Fatal) -> ! {
                 delay_ms_blocking(1_000);
             }
             // 4回チカチカ → 長休み (flushの途中でI2Cが落ちる/ノイズ等)
-            Fatal::FlushFail => {
+            FatalFail::Flush => {
                 for _ in 0..4 {
                     led_on(led);
                     delay_ms_blocking(80);
@@ -229,16 +229,16 @@ async fn neopixel_task(
     let mut ticker = Ticker::every(embassy_time::Duration::from_millis(20));
     let mut j: i32 = 0;
     
-    // LEDの数。今回は1個を想定
-    const NUM_LEDS: usize = 1;
+    // LEDの数
+    const NUM_LEDS: usize = 6;
     let mut data = [RGBW::default(); NUM_LEDS];
 
     loop {
-        for i in 0..NUM_LEDS {
+        for (i, led) in data.iter_mut().enumerate().take(NUM_LEDS) {
             let color = wheel(j.wrapping_add(i as i32 * 256 / NUM_LEDS as i32) as u8);
             // Convert RGB8 to RGBW (White is controlled by MIDI)
             let w = 0;//WHITE_LEVEL.load(Ordering::Relaxed);
-            data[i] = RGBW { r: color.r, g: color.g, b: color.b, a: smart_leds::White(w) };
+            *led = RGBW { r: color.r, g: color.g, b: color.b, a: smart_leds::White(w) };
         }
         ws2812.write(&data).await;
         
@@ -367,7 +367,7 @@ async fn heartbeat_task(mut led: Output<'static>) {
     let mut counter = 0u32;
     loop {
         counter = counter.wrapping_add(1);
-        if counter % 2 == 0 {
+        if counter.is_multiple_of(2) {
             led_on(&mut led);
         } else {
             led_off(&mut led);

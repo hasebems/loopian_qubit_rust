@@ -1,6 +1,6 @@
 use embedded_graphics::image::{Image, ImageRaw};
-use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_6X10};
 use embedded_graphics::mono_font::MonoTextStyle;
+use embedded_graphics::mono_font::ascii::{FONT_6X10, FONT_10X20};
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{
@@ -146,12 +146,12 @@ where
 
     // Reduced iterations to avoid I2C timeout
     for x in (0..w).step_by(16) {
-        let _ = Line::new(Point::new(0, 0), Point::new(x as i32, (h - 1) as i32))
+        let _ = Line::new(Point::new(0, 0), Point::new(x, h - 1))
             .into_styled(style)
             .draw(oled.display());
     }
     for y in (0..h).step_by(16) {
-        let _ = Line::new(Point::new(0, 0), Point::new((w - 1) as i32, y as i32))
+        let _ = Line::new(Point::new(0, 0), Point::new(w - 1, y))
             .into_styled(style)
             .draw(oled.display());
     }
@@ -364,6 +364,7 @@ where
     I2C: embedded_hal::i2c::I2c,
 {
     // 16x16 1bpp "X" bitmap
+    #[rustfmt::skip]
     const RAW: [u8; 32] = [
         0b1000_0001, 0b0000_0001,
         0b0100_0010, 0b1000_0010,
