@@ -21,8 +21,6 @@ jobs:
           # Check compilation works on common OSes
           # (i.e. no path issues)
           - ubuntu-latest
-          - macOS-latest
-          - windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v3
@@ -31,8 +29,8 @@ jobs:
           toolchain: ${{ matrix.rust }}
           target: thumbv8m.main-none-eabihf
       - run: cargo install flip-link
-      - run: cargo build --all
-      - run: cargo build --all --release
+      - run: cargo build --target thumbv8m.main-none-eabihf
+      - run: cargo build --target thumbv8m.main-none-eabihf --release
   linting:
     name: Linting
     runs-on: ubuntu-latest

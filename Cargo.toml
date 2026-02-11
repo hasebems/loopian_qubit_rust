@@ -78,7 +78,7 @@ overflow-checks = true
 [profile.release]
 debug = 2
 debug-assertions = false
-lto = 'fat'
+# lto = 'fat'
 opt-level = 2
 overflow-checks = false
 
@@ -106,5 +106,5 @@ overflow-checks = true
 [profile.bench]
 debug = 2
 debug-assertions = false
-lto = 'fat'
+# lto = 'fat'
 opt-level = 3

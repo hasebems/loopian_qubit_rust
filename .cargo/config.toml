@@ -20,6 +20,7 @@ rustflags = [
     "-C", "link-arg=-Tdefmt.x",
     "-C", "target-cpu=cortex-m33",
 ]
+linker = "rust-lld"
 
 [build]
 target = "thumbv8m.main-none-eabihf"
