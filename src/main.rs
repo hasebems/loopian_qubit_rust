@@ -336,39 +336,28 @@ async fn core1_led_task(mut led: Output<'static>) {
 }
 
 #[embassy_executor::task]
-async fn core1_i2c_task(i2c: I2c<'static, I2C1, i2c::Async>) {
-    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-    use embassy_sync::mutex::Mutex;
-
-    // I2Cバスを共有可能にする
-    let i2c_bus: Mutex<CriticalSectionRawMutex, _> = Mutex::new(i2c);
-
-    // AT42QT1070 が PCA9544 越しで16個分
+async fn core1_i2c_task(mut i2c: I2c<'static, I2C1, i2c::Async>) {
+    // AT42QT1070 と PCA9544 の生成
     let pca = devices::pca9544::Pca9544::new();
     let mut at42 = devices::at42qt::At42Qt1070::new();
 
     // OLED初期化（I2Cを保持しない）
     use crate::devices::ssd1306::Oled;
     use ui::oled_demo::OledDemo;
-    
     let mut oled = Oled::new();
 
     // --- init phase ---
-    {
-        let mut i2c = i2c_bus.lock().await;
-        
-        // OLED初期化
-        if let Err(_) = oled.init(&mut *i2c) {
-            defmt::error!("OLED init failed");
+    // AT42QT1070 が PCA9544 越しで16個分
+    for _mux in 0..4usize {
+        for ch in 0..4usize {
+            pca.select(&mut i2c, ch as u8).await.ok();
+            at42.init(&mut i2c).await.ok();
         }
-        
-        // AT42QT初期化
-        for _mux in 0..4usize {
-            for ch in 0..4usize {
-                pca.select(&mut *i2c, ch as u8).await.ok();
-                at42.init(&mut *i2c).await.ok();
-            }
-        }
+    }
+
+    // OLED初期化
+    if let Err(_) = oled.init(&mut i2c) {
+        defmt::error!("OLED init failed");
     }
 
     // 初期状態
@@ -379,33 +368,24 @@ async fn core1_i2c_task(i2c: I2c<'static, I2C1, i2c::Async>) {
 
     // Task Loop
     loop {
-        // I2Cをロックして各操作を実行
-        {
-            let mut i2c = i2c_bus.lock().await;
-            
-            // Touch Scan
-            for mux in 0..4usize {
-                for ch in 0..4usize {
-                    let sid = mux * 4 + ch;
-                    pca.select(&mut *i2c, ch as u8).await.ok();
-                    if let Ok(rddata) = at42.read_state(&mut *i2c).await {
-                        _prev[sid] = rddata;
-                    }
-                    // TOUCH_CH.send(TouchEvent { sid, changed, state }).await;
+        // Touch Scan
+        for mux in 0..4usize {
+            for ch in 0..4usize {
+                let sid = mux * 4 + ch;
+                pca.select(&mut i2c, ch as u8).await.ok();
+                if let Ok(rddata) = at42.read_state(&mut i2c).await {
+                    _prev[sid] = rddata;
                 }
+                // TOUCH_CH.send(TouchEvent { sid, changed, state }).await;
             }
+        }
 
-            // OLED更新
-            match demo.tick(&mut oled, &mut *i2c) {
-                Ok(delay) => {
-                    drop(i2c); // I2Cロックを解放してから待機
-                    Timer::after_millis(delay).await;
-                }
-                Err(_) => {
-                    defmt::error!("OLED tick failed");
-                    drop(i2c);
-                    Timer::after_millis(1000).await;
-                }
+        // OLED更新
+        match demo.tick(&mut oled, &mut i2c) {
+            Ok(delay) => Timer::after_millis(delay).await,
+            Err(_) => {
+                defmt::error!("OLED tick failed");
+                Timer::after_millis(1000).await;
             }
         }
     }
