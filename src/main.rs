@@ -7,14 +7,14 @@
 #![no_main]
 
 mod devices;
-mod oled_demo;
+mod ui;
 
 use embassy_executor::Executor;
 use embassy_rp::Peri;
 use embassy_rp::multicore::{Stack, spawn_core1};
 use embassy_time::Timer;
 
-use defmt::{error, info, unwrap, warn};
+use defmt::{info, unwrap, warn};
 use rp235x_hal::{self as hal};
 
 use embassy_rp::bind_interrupts;
@@ -144,7 +144,7 @@ fn main() -> ! {
 
     // USB Driver
     let driver = Driver::new(p.USB, Irqs);
-    let mut config = Config::new(0xc0de, 0xcafe);
+    let mut config = Config::new(0xc0de, 0xcafe); // Vendor ID / Product ID
     config.manufacturer = Some("Embassy");
     config.product = Some("USB MIDI Device");
     config.serial_number = Some("12345678");
@@ -190,7 +190,8 @@ fn main() -> ! {
             let executor1 = EXECUTOR1.init(Executor::new());
             executor1.run(|spawner| {
                 spawner.spawn(unwrap!(core1_led_task(led)));
-                spawner.spawn(unwrap!(core1_oled_task(i2c)));
+                spawner.spawn(unwrap!(core1_i2c_task(i2c)));
+                spawner.spawn(unwrap!(core1_ui_task()));
             });
         },
     );
@@ -335,30 +336,96 @@ async fn core1_led_task(mut led: Output<'static>) {
 }
 
 #[embassy_executor::task]
-async fn core1_oled_task(i2c: I2c<'static, I2C1, i2c::Async>) {
-    use crate::devices::ssd1306::Oled;
-    use crate::oled_demo::OledDemo;
+async fn core1_i2c_task(i2c: I2c<'static, I2C1, i2c::Async>) {
+    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+    use embassy_sync::mutex::Mutex;
 
-    info!("Core1 OLED task started");
-    match Oled::new(i2c) {
-        Ok(mut oled) => {
-            let mut demo = OledDemo::new();
-            loop {
-                match demo.tick(&mut oled) {
-                    Ok(delay) => Timer::after_millis(delay).await,
-                    Err(_) => {
-                        error!("OLED tick failed");
-                        Timer::after_millis(1000).await;
+    // I2Cバスを共有可能にする
+    let i2c_bus: Mutex<CriticalSectionRawMutex, _> = Mutex::new(i2c);
+
+    // AT42QT1070 が PCA9544 越しで16個分
+    let pca = devices::pca9544::Pca9544::new();
+    let mut at42 = devices::at42qt::At42Qt1070::new();
+
+    // OLED初期化（I2Cを保持しない）
+    use crate::devices::ssd1306::Oled;
+    use ui::oled_demo::OledDemo;
+    
+    let mut oled = Oled::new();
+
+    // --- init phase ---
+    {
+        let mut i2c = i2c_bus.lock().await;
+        
+        // OLED初期化
+        if let Err(_) = oled.init(&mut *i2c) {
+            defmt::error!("OLED init failed");
+        }
+        
+        // AT42QT初期化
+        for _mux in 0..4usize {
+            for ch in 0..4usize {
+                pca.select(&mut *i2c, ch as u8).await.ok();
+                at42.init(&mut *i2c).await.ok();
+            }
+        }
+    }
+
+    // 初期状態
+    let mut _prev = [0u8; 16];
+
+    let mut demo = OledDemo::new();    
+    info!("Core1 I2C task started");
+
+    // Task Loop
+    loop {
+        // I2Cをロックして各操作を実行
+        {
+            let mut i2c = i2c_bus.lock().await;
+            
+            // Touch Scan
+            for mux in 0..4usize {
+                for ch in 0..4usize {
+                    let sid = mux * 4 + ch;
+                    pca.select(&mut *i2c, ch as u8).await.ok();
+                    if let Ok(rddata) = at42.read_state(&mut *i2c).await {
+                        _prev[sid] = rddata;
                     }
+                    // TOUCH_CH.send(TouchEvent { sid, changed, state }).await;
+                }
+            }
+
+            // OLED更新
+            match demo.tick(&mut oled, &mut *i2c) {
+                Ok(delay) => {
+                    drop(i2c); // I2Cロックを解放してから待機
+                    Timer::after_millis(delay).await;
+                }
+                Err(_) => {
+                    defmt::error!("OLED tick failed");
+                    drop(i2c);
+                    Timer::after_millis(1000).await;
                 }
             }
         }
-        Err(_) => {
-            error!("OLED init failed");
-            loop {
+    }
+}
+
+#[embassy_executor::task]
+async fn core1_ui_task() {
+    use ui::oled_demo::OledDemo;
+    info!("Core1 UI task started");
+
+    let mut _demo = OledDemo::new();
+    loop {
+/*         match demo.tick(&mut oled) {
+            Ok(delay) => Timer::after_millis(delay).await,
+            Err(_) => {
+                error!("OLED tick failed");
                 Timer::after_millis(1000).await;
             }
-        }
+        }*/
+        Timer::after_millis(1000).await;
     }
 }
 
