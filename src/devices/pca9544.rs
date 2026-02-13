@@ -4,7 +4,9 @@ pub struct Pca9544 {
 
 impl Pca9544 {
     const ADDR: u8 = 0x74;
-    pub const fn new() -> Self { Self { addr: Self::ADDR } }
+    pub const fn new() -> Self {
+        Self { addr: Self::ADDR }
+    }
 
     pub async fn select<I2C>(&self, i2c: &mut I2C, ch: u8) -> Result<(), I2C::Error>
     where

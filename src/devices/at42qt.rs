@@ -5,7 +5,9 @@ pub struct At42Qt1070 {
 
 impl At42Qt1070 {
     const ADDR: u8 = 0x1B;
-    pub const fn new() -> Self { Self { addr: Self::ADDR } }
+    pub const fn new() -> Self {
+        Self { addr: Self::ADDR }
+    }
 
     /// 初期化
     pub async fn init<I2C>(&mut self, _i2c: &mut I2C) -> Result<(), I2C::Error>

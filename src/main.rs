@@ -12,8 +12,8 @@ mod ui;
 use embassy_executor::Executor;
 use embassy_rp::Peri;
 use embassy_rp::multicore::{Stack, spawn_core1};
-use embassy_time::Timer;
 use embassy_sync::channel::Channel;
+use embassy_time::Timer;
 
 use rp235x_hal::{self as hal};
 
@@ -70,8 +70,16 @@ static EXECUTOR1: StaticCell<embassy_executor::Executor> = StaticCell::new();
 
 // OLEDバッファ転送用チャンネル（ダブルバッファリング）
 use devices::ssd1306::OledBuffer;
-static BUFFER_TO_DISPLAY: Channel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, OledBuffer, 2> = Channel::new();
-static BUFFER_FROM_DISPLAY: Channel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, OledBuffer, 2> = Channel::new();
+static BUFFER_TO_DISPLAY: Channel<
+    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+    OledBuffer,
+    2,
+> = Channel::new();
+static BUFFER_FROM_DISPLAY: Channel<
+    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+    OledBuffer,
+    2,
+> = Channel::new();
 
 // デバッグ用状態フラグ（LED点滅パターンで表示）
 // 0: 正常動作, 1-9: 各種状態, 10以上: エラー
@@ -365,7 +373,7 @@ async fn core1_led_task(mut led: Output<'static>) {
     loop {
         let state = DEBUG_STATE.load(Ordering::Relaxed);
         let errors = ERROR_COUNT.load(Ordering::Relaxed);
-        
+
         // エラーがある場合は高速点滅
         if errors > 0 {
             for _ in 0..errors.min(10) {
@@ -454,12 +462,12 @@ async fn core1_i2c_task(mut i2c: I2c<'static, I2C1, i2c::Async>) {
         // OLED更新：UIタスクから描画済みバッファを受信
         DEBUG_STATE.store(2, Ordering::Relaxed); // I2Cタスクがバッファ待ち
         let buffer = BUFFER_TO_DISPLAY.receive().await;
-        
+
         DEBUG_STATE.store(3, Ordering::Relaxed); // flush中
         if let Err(_) = oled.flush_buffer(&buffer, &mut i2c) {
             ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
         }
-        
+
         // バッファを返却
         BUFFER_FROM_DISPLAY.send(buffer).await;
         DEBUG_STATE.store(0, Ordering::Relaxed); // 正常動作
@@ -487,20 +495,20 @@ async fn oled_ui_task() {
     use ui::oled_demo::OledDemo;
 
     let mut demo = OledDemo::new();
-    
+
     loop {
         // 空バッファを受信
         DEBUG_STATE.store(1, Ordering::Relaxed); // UIタスクがバッファ待ち
         let mut buffer = BUFFER_FROM_DISPLAY.receive().await;
-        
+
         // 描画
         DEBUG_STATE.store(5, Ordering::Relaxed); // 描画中
         let delay = demo.tick(&mut buffer);
-        
+
         // 描画済みバッファを送信
         BUFFER_TO_DISPLAY.send(buffer).await;
         DEBUG_STATE.store(0, Ordering::Relaxed); // 正常動作
-        
+
         // 次のステップまで待機
         Timer::after_millis(delay).await;
     }

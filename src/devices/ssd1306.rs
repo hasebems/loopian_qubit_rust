@@ -1,7 +1,4 @@
-use embedded_graphics::{
-    pixelcolor::BinaryColor,
-    prelude::*,
-};
+use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 
 const DISPLAY_WIDTH: usize = 128;
 const DISPLAY_HEIGHT: usize = 64;
@@ -55,36 +52,43 @@ impl Oled {
         I2C: embedded_hal::i2c::I2c,
     {
         // SSD1306初期化シーケンス
-        self.send_commands(i2c, &[
-            0xAE, // Display off
-            0xD5, 0x80, // Set display clock divide ratio/oscillator frequency
-            0xA8, 0x3F, // Set multiplex ratio (1 to 64)
-            0xD3, 0x00, // Set display offset
-            0x40, // Set start line address
-            0x8D, 0x14, // Enable charge pump
-            0x20, 0x00, // Set memory addressing mode (horizontal)
-            0xA1, // Set segment re-map
-            0xC8, // Set COM output scan direction
-            0xDA, 0x12, // Set COM pins hardware configuration
-            0x81, 0xFF, // Set contrast control
-            0xD9, 0xF1, // Set pre-charge period
-            0xDB, 0x40, // Set VCOMH deselect level
-            0xA4, // Entire display on (resume to RAM content display)
-            0xA6, // Set normal display (not inverted)
-            0xAF, // Display on
-        ])?;
-        
+        self.send_commands(
+            i2c,
+            &[
+                0xAE, // Display off
+                0xD5, 0x80, // Set display clock divide ratio/oscillator frequency
+                0xA8, 0x3F, // Set multiplex ratio (1 to 64)
+                0xD3, 0x00, // Set display offset
+                0x40, // Set start line address
+                0x8D, 0x14, // Enable charge pump
+                0x20, 0x00, // Set memory addressing mode (horizontal)
+                0xA1, // Set segment re-map
+                0xC8, // Set COM output scan direction
+                0xDA, 0x12, // Set COM pins hardware configuration
+                0x81, 0xFF, // Set contrast control
+                0xD9, 0xF1, // Set pre-charge period
+                0xDB, 0x40, // Set VCOMH deselect level
+                0xA4, // Entire display on (resume to RAM content display)
+                0xA6, // Set normal display (not inverted)
+                0xAF, // Display on
+            ],
+        )?;
+
         Ok(())
     }
 
     /// 複数のコマンドを送信
-    fn send_commands<I2C>(&self, i2c: &mut I2C, commands: &[u8]) -> Result<(), display_interface::DisplayError>
+    fn send_commands<I2C>(
+        &self,
+        i2c: &mut I2C,
+        commands: &[u8],
+    ) -> Result<(), display_interface::DisplayError>
     where
         I2C: embedded_hal::i2c::I2c,
     {
         let mut buf = [0u8; 32];
         buf[0] = 0x00; // Command mode
-        
+
         for chunk in commands.chunks(31) {
             buf[1..=chunk.len()].copy_from_slice(chunk);
             i2c.write(self.addr, &buf[..=chunk.len()])
@@ -94,16 +98,20 @@ impl Oled {
     }
 
     /// バッファをディスプレイに転送
-    pub fn flush_buffer<I2C>(&self, buffer: &OledBuffer, i2c: &mut I2C) -> Result<(), display_interface::DisplayError>
+    pub fn flush_buffer<I2C>(
+        &self,
+        buffer: &OledBuffer,
+        i2c: &mut I2C,
+    ) -> Result<(), display_interface::DisplayError>
     where
         I2C: embedded_hal::i2c::I2c,
     {
         // ページアドレス範囲を設定（Page0〜Page7）
         self.send_commands(i2c, &[0x22, 0x00, 0x07])?;
-        
+
         // カラムアドレス範囲を設定（0〜127）
         self.send_commands(i2c, &[0x21, 0x00, 0x7F])?;
-        
+
         // データを送信（チャンク単位で）
         const CHUNK_SIZE: usize = 31;
         for chunk in buffer.data.chunks(CHUNK_SIZE) {
@@ -113,7 +121,7 @@ impl Oled {
             i2c.write(self.addr, &data[..=chunk.len()])
                 .map_err(|_| display_interface::DisplayError::BusWriteError)?;
         }
-        
+
         Ok(())
     }
 }
@@ -136,13 +144,13 @@ impl DrawTarget for OledBuffer {
         for Pixel(coord, color) in pixels.into_iter() {
             let x = coord.x;
             let y = coord.y;
-            
+
             if x >= 0 && x < DISPLAY_WIDTH as i32 && y >= 0 && y < DISPLAY_HEIGHT as i32 {
                 let x = x as usize;
                 let y = y as usize;
                 let byte_idx = x + (y / 8) * DISPLAY_WIDTH;
                 let bit_idx = y % 8;
-                
+
                 if byte_idx < BUFFER_SIZE {
                     match color {
                         BinaryColor::On => self.data[byte_idx] |= 1 << bit_idx,
