@@ -5,16 +5,14 @@ version = "0.1.0"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy.git", branch = "main", features = ["defmt"] }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", branch = "main", features = ["defmt"] }
-embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", branch = "main", features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
-embassy-time = { git = "https://github.com/embassy-rs/embassy.git", branch = "main", features = ["defmt", "defmt-timestamp-uptime"] }
-embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", branch = "main", default-features = false, features = ["defmt", "time-driver", "critical-section-impl", "rp235xa", "binary-info"] }
-embassy-usb = { git = "https://github.com/embassy-rs/embassy.git", branch = "main", features = ["defmt"] }
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy.git", branch = "main" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", branch = "main" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", branch = "main", features = ["arch-cortex-m", "executor-thread", "executor-interrupt"] }
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", branch = "main" }
+embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", branch = "main", default-features = false, features = ["time-driver", "critical-section-impl", "rp235xa", "binary-info"] }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy.git", branch = "main" }
 embassy-futures = { git = "https://github.com/embassy-rs/embassy.git", branch = "main" }
 
-defmt = "1.0.1"
-defmt-rtt = "1.0.0"
 fixed = "1.23.1"
 fixed-macro = "1.2"
 
@@ -31,7 +29,6 @@ tb6612fng = "1.0.0"
 cortex-m = { version = "0.7.6", features = ["inline-asm"] }
 cortex-m-rt = "0.7.0"
 critical-section = "1.1"
-panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 display-interface-spi = "0.5.0"
 display-interface-i2c = "0.5.0"
 embedded-graphics = "0.8.1"
@@ -46,7 +43,7 @@ usbd-hid = "0.9.0"
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"
 embedded-hal-bus = { version = "0.2", features = ["async"] }
-embedded-io-async = { version = "0.7.0", features = ["defmt"] }
+embedded-io-async = { version = "0.7.0" }
 embedded-storage = { version = "0.3" }
 static_cell = "2.1"
 portable-atomic = { version = "1.5", features = ["critical-section"] }

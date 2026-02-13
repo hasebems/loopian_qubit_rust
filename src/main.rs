@@ -13,8 +13,8 @@ use embassy_executor::Executor;
 use embassy_rp::Peri;
 use embassy_rp::multicore::{Stack, spawn_core1};
 use embassy_time::Timer;
+use embassy_sync::channel::Channel;
 
-use defmt::{info, unwrap, warn};
 use rp235x_hal::{self as hal};
 
 use embassy_rp::bind_interrupts;
@@ -48,7 +48,15 @@ macro_rules! make_static {
 use cortex_m::asm;
 use portable_atomic::{AtomicU8, Ordering};
 use static_cell::StaticCell;
-use {defmt_rtt as _, panic_probe as _};
+
+// パニックハンドラ: エラーカウントを最大値にして永久ループ
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    ERROR_COUNT.store(255, Ordering::Relaxed);
+    loop {
+        asm::nop();
+    }
+}
 
 /// Tell the Boot ROM about our application
 #[unsafe(link_section = ".start_block")]
@@ -56,9 +64,19 @@ use {defmt_rtt as _, panic_probe as _};
 pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 
 // Core1 stack
-static mut CORE1_STACK: Stack<4096> = Stack::new();
+static mut CORE1_STACK: Stack<8192> = Stack::new();
 static EXECUTOR0: StaticCell<embassy_executor::Executor> = StaticCell::new();
 static EXECUTOR1: StaticCell<embassy_executor::Executor> = StaticCell::new();
+
+// OLEDバッファ転送用チャンネル（ダブルバッファリング）
+use devices::ssd1306::OledBuffer;
+static BUFFER_TO_DISPLAY: Channel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, OledBuffer, 2> = Channel::new();
+static BUFFER_FROM_DISPLAY: Channel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, OledBuffer, 2> = Channel::new();
+
+// デバッグ用状態フラグ（LED点滅パターンで表示）
+// 0: 正常動作, 1-9: 各種状態, 10以上: エラー
+static DEBUG_STATE: AtomicU8 = AtomicU8::new(0);
+static ERROR_COUNT: AtomicU8 = AtomicU8::new(0);
 
 // 診断用：Core1起動確認フラグ
 #[allow(dead_code)]
@@ -137,7 +155,6 @@ fn fatal_blink_forever(led: &mut Output<'static>, stage: u8, kind: FatalFail) ->
 #[cortex_m_rt::entry]
 fn main() -> ! {
     let p = embassy_rp::init(Default::default());
-    info!("Program start - Dual Core Test (Core1 LED)");
 
     // LEDピン
     let led = Output::new(p.PIN_25, Level::Low);
@@ -182,6 +199,15 @@ fn main() -> ! {
         PioWs2812Program::new(&mut common)
     );
 
+    // 初期バッファを準備してチャンネルに投入（Core1起動前に実行）
+    // 2つのバッファを確実に投入
+    if BUFFER_FROM_DISPLAY.try_send(OledBuffer::new()).is_err() {
+        ERROR_COUNT.store(1, Ordering::Relaxed);
+    }
+    if BUFFER_FROM_DISPLAY.try_send(OledBuffer::new()).is_err() {
+        ERROR_COUNT.store(2, Ordering::Relaxed);
+    }
+
     // Core1起動
     spawn_core1(
         p.CORE1,
@@ -189,9 +215,18 @@ fn main() -> ! {
         move || {
             let executor1 = EXECUTOR1.init(Executor::new());
             executor1.run(|spawner| {
-                spawner.spawn(unwrap!(core1_led_task(led)));
-                spawner.spawn(unwrap!(core1_i2c_task(i2c)));
-                spawner.spawn(unwrap!(core1_ui_task()));
+                match core1_led_task(led) {
+                    Ok(token) => spawner.spawn(token),
+                    Err(_) => ERROR_COUNT.store(10, Ordering::Relaxed),
+                }
+                match core1_i2c_task(i2c) {
+                    Ok(token) => spawner.spawn(token),
+                    Err(_) => ERROR_COUNT.store(11, Ordering::Relaxed),
+                }
+                match oled_ui_task() {
+                    Ok(token) => spawner.spawn(token),
+                    Err(_) => ERROR_COUNT.store(12, Ordering::Relaxed),
+                }
             });
         },
     );
@@ -202,17 +237,23 @@ fn main() -> ! {
     // Core0もExecutorを回す（必須）
     let executor0 = EXECUTOR0.init(Executor::new());
     executor0.run(|spawner| {
-        spawner.spawn(unwrap!(usb_task(usb)));
-        spawner.spawn(unwrap!(midi_task(sender)));
-        spawner.spawn(unwrap!(midi_rx_task(receiver)));
+        match usb_task(usb) {
+            Ok(token) => spawner.spawn(token),
+            Err(_) => ERROR_COUNT.store(20, Ordering::Relaxed),
+        }
+        match midi_task(sender) {
+            Ok(token) => spawner.spawn(token),
+            Err(_) => ERROR_COUNT.store(21, Ordering::Relaxed),
+        }
+        match midi_rx_task(receiver) {
+            Ok(token) => spawner.spawn(token),
+            Err(_) => ERROR_COUNT.store(22, Ordering::Relaxed),
+        }
         // Neopixel on D0 (GP26)
-        spawner.spawn(unwrap!(neopixel_task(
-            common,
-            sm0,
-            p.DMA_CH0,
-            p.PIN_26,
-            ws2812_program
-        )));
+        match neopixel_task(common, sm0, p.DMA_CH0, p.PIN_26, ws2812_program) {
+            Ok(token) => spawner.spawn(token),
+            Err(_) => ERROR_COUNT.store(23, Ordering::Relaxed),
+        }
     });
 }
 
@@ -228,8 +269,6 @@ async fn neopixel_task(
     use embassy_rp::pio_programs::ws2812::RgbwPioWs2812;
     use embassy_time::Ticker;
     use smart_leds::RGBW;
-
-    info!("Neopixel task started (GP26 / RGBW)");
 
     // RgbwPioWs2812 is needed for RGBW
     let mut ws2812 = RgbwPioWs2812::new(&mut common, sm, dma, Irqs, pin, program);
@@ -267,19 +306,16 @@ async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, Driver<'static, USB>>
 
 #[embassy_executor::task]
 async fn midi_task(mut sender: Sender<'static, Driver<'static, USB>>) {
-    info!("MIDI task started");
     let mut pitch = 60u8;
     loop {
         // Note On (Channel 0, Note 60, Velocity 64)
-        info!("Note On {}", pitch);
         let packet = [0x09, 0x90, pitch, 64];
-        sender.write_packet(&packet).await.unwrap();
+        sender.write_packet(&packet).await.ok();
         Timer::after_millis(500).await;
 
         // Note Off
-        info!("Note Off {}", pitch);
         let packet = [0x08, 0x80, pitch, 64];
-        sender.write_packet(&packet).await.unwrap();
+        sender.write_packet(&packet).await.ok();
         Timer::after_millis(500).await;
 
         pitch = if pitch < 72 { pitch + 1 } else { 60 };
@@ -288,7 +324,6 @@ async fn midi_task(mut sender: Sender<'static, Driver<'static, USB>>) {
 
 #[embassy_executor::task]
 async fn midi_rx_task(mut receiver: Receiver<'static, Driver<'static, USB>>) {
-    info!("MIDI RX task started");
     let mut buf = [0; 64];
 
     loop {
@@ -318,7 +353,8 @@ async fn midi_rx_task(mut receiver: Receiver<'static, Driver<'static, USB>>) {
                 }
             }
             Err(_e) => {
-                warn!("Error reading MIDI packet");
+                // エラーカウント
+                ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -326,12 +362,62 @@ async fn midi_rx_task(mut receiver: Receiver<'static, Driver<'static, USB>>) {
 
 #[embassy_executor::task]
 async fn core1_led_task(mut led: Output<'static>) {
-    info!("Core1 LED task started");
     loop {
-        led.set_high();
-        Timer::after_millis(100).await; // 早めの点滅
-        led.set_low();
-        Timer::after_millis(100).await;
+        let state = DEBUG_STATE.load(Ordering::Relaxed);
+        let errors = ERROR_COUNT.load(Ordering::Relaxed);
+        
+        // エラーがある場合は高速点滅
+        if errors > 0 {
+            for _ in 0..errors.min(10) {
+                led.set_high();
+                Timer::after_millis(50).await;
+                led.set_low();
+                Timer::after_millis(50).await;
+            }
+            Timer::after_millis(500).await;
+        }
+        // 状態に応じた点滅パターン
+        else {
+            match state {
+                0 => {
+                    // 正常動作: ゆっくり点滅
+                    led.set_high();
+                    Timer::after_millis(100).await;
+                    led.set_low();
+                    Timer::after_millis(900).await;
+                }
+                1 => {
+                    // UIタスクがバッファ待ち: 2回点滅
+                    for _ in 0..2 {
+                        led.set_high();
+                        Timer::after_millis(100).await;
+                        led.set_low();
+                        Timer::after_millis(100).await;
+                    }
+                    Timer::after_millis(600).await;
+                }
+                2 => {
+                    // I2Cタスクがバッファ待ち: 3回点滅
+                    for _ in 0..3 {
+                        led.set_high();
+                        Timer::after_millis(100).await;
+                        led.set_low();
+                        Timer::after_millis(100).await;
+                    }
+                    Timer::after_millis(400).await;
+                }
+                _ => {
+                    // その他の状態: state回数点滅
+                    for _ in 0..state.min(10) {
+                        led.set_high();
+                        Timer::after_millis(100).await;
+                        led.set_low();
+                        Timer::after_millis(100).await;
+                    }
+                    Timer::after_millis(500).await;
+                }
+            }
+        }
     }
 }
 
@@ -343,7 +429,6 @@ async fn core1_i2c_task(mut i2c: I2c<'static, I2C1, i2c::Async>) {
 
     // OLED初期化（I2Cを保持しない）
     use crate::devices::ssd1306::Oled;
-    use ui::oled_demo::OledDemo;
     let mut oled = Oled::new();
 
     // --- init phase ---
@@ -357,55 +442,67 @@ async fn core1_i2c_task(mut i2c: I2c<'static, I2C1, i2c::Async>) {
 
     // OLED初期化
     if let Err(_) = oled.init(&mut i2c) {
-        defmt::error!("OLED init failed");
+        ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 
     // 初期状態
     let mut _prev = [0u8; 16];
-
-    let mut demo = OledDemo::new();    
-    info!("Core1 I2C task started");
+    let mut touch_counter = 0u32;
 
     // Task Loop
     loop {
-        // Touch Scan
-        for mux in 0..4usize {
-            for ch in 0..4usize {
-                let sid = mux * 4 + ch;
-                pca.select(&mut i2c, ch as u8).await.ok();
-                if let Ok(rddata) = at42.read_state(&mut i2c).await {
-                    _prev[sid] = rddata;
-                }
-                // TOUCH_CH.send(TouchEvent { sid, changed, state }).await;
-            }
+        // OLED更新：UIタスクから描画済みバッファを受信
+        DEBUG_STATE.store(2, Ordering::Relaxed); // I2Cタスクがバッファ待ち
+        let buffer = BUFFER_TO_DISPLAY.receive().await;
+        
+        DEBUG_STATE.store(3, Ordering::Relaxed); // flush中
+        if let Err(_) = oled.flush_buffer(&buffer, &mut i2c) {
+            ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
         }
+        
+        // バッファを返却
+        BUFFER_FROM_DISPLAY.send(buffer).await;
+        DEBUG_STATE.store(0, Ordering::Relaxed); // 正常動作
 
-        // OLED更新
-        match demo.tick(&mut oled, &mut i2c) {
-            Ok(delay) => Timer::after_millis(delay).await,
-            Err(_) => {
-                defmt::error!("OLED tick failed");
-                Timer::after_millis(1000).await;
+        // Touch Scan（10回に1回だけ実行）
+        touch_counter += 1;
+        if touch_counter % 10 == 0 {
+            DEBUG_STATE.store(4, Ordering::Relaxed); // Touch scan中
+            for mux in 0..4usize {
+                for ch in 0..4usize {
+                    let sid = mux * 4 + ch;
+                    pca.select(&mut i2c, ch as u8).await.ok();
+                    if let Ok(rddata) = at42.read_state(&mut i2c).await {
+                        _prev[sid] = rddata;
+                    }
+                }
             }
+            DEBUG_STATE.store(0, Ordering::Relaxed); // 正常動作
         }
     }
 }
 
 #[embassy_executor::task]
-async fn core1_ui_task() {
+async fn oled_ui_task() {
     use ui::oled_demo::OledDemo;
-    info!("Core1 UI task started");
 
-    let mut _demo = OledDemo::new();
+    let mut demo = OledDemo::new();
+    
     loop {
-/*         match demo.tick(&mut oled) {
-            Ok(delay) => Timer::after_millis(delay).await,
-            Err(_) => {
-                error!("OLED tick failed");
-                Timer::after_millis(1000).await;
-            }
-        }*/
-        Timer::after_millis(1000).await;
+        // 空バッファを受信
+        DEBUG_STATE.store(1, Ordering::Relaxed); // UIタスクがバッファ待ち
+        let mut buffer = BUFFER_FROM_DISPLAY.receive().await;
+        
+        // 描画
+        DEBUG_STATE.store(5, Ordering::Relaxed); // 描画中
+        let delay = demo.tick(&mut buffer);
+        
+        // 描画済みバッファを送信
+        BUFFER_TO_DISPLAY.send(buffer).await;
+        DEBUG_STATE.store(0, Ordering::Relaxed); // 正常動作
+        
+        // 次のステップまで待機
+        Timer::after_millis(delay).await;
     }
 }
 

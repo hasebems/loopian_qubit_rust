@@ -7,10 +7,35 @@ const DISPLAY_WIDTH: usize = 128;
 const DISPLAY_HEIGHT: usize = 64;
 const BUFFER_SIZE: usize = (DISPLAY_WIDTH * DISPLAY_HEIGHT) / 8;
 
+/// フレームバッファ（描画用、1024バイト）
+#[derive(Debug)]
+pub struct OledBuffer {
+    pub data: [u8; BUFFER_SIZE],
+}
+
+impl OledBuffer {
+    /// 新規バッファを作成（ゼロクリア）
+    pub fn new() -> Self {
+        Self {
+            data: [0; BUFFER_SIZE],
+        }
+    }
+
+    /// バッファをクリア
+    pub fn clear(&mut self) {
+        self.data.fill(0);
+    }
+}
+
+impl Default for OledBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// SSD1306 OLEDディスプレイドライバ（I2C非保持版）
 pub struct Oled {
     addr: u8,
-    buffer: [u8; BUFFER_SIZE],
 }
 
 impl Oled {
@@ -21,10 +46,7 @@ impl Oled {
 
     /// 指定アドレスで新規作成
     pub fn new_at(addr: u8) -> Self {
-        Self {
-            addr,
-            buffer: [0; BUFFER_SIZE],
-        }
+        Self { addr }
     }
 
     /// ディスプレイを初期化（I2Cを借用）
@@ -71,13 +93,8 @@ impl Oled {
         Ok(())
     }
 
-    /// バッファをクリア
-    pub fn clear(&mut self) {
-        self.buffer.fill(0);
-    }
-
     /// バッファをディスプレイに転送
-    pub fn flush<I2C>(&mut self, i2c: &mut I2C) -> Result<(), display_interface::DisplayError>
+    pub fn flush_buffer<I2C>(&self, buffer: &OledBuffer, i2c: &mut I2C) -> Result<(), display_interface::DisplayError>
     where
         I2C: embedded_hal::i2c::I2c,
     {
@@ -89,7 +106,7 @@ impl Oled {
         
         // データを送信（チャンク単位で）
         const CHUNK_SIZE: usize = 31;
-        for chunk in self.buffer.chunks(CHUNK_SIZE) {
+        for chunk in buffer.data.chunks(CHUNK_SIZE) {
             let mut data = [0u8; CHUNK_SIZE + 1];
             data[0] = 0x40; // Data mode
             data[1..=chunk.len()].copy_from_slice(chunk);
@@ -107,8 +124,8 @@ impl Default for Oled {
     }
 }
 
-/// embedded-graphics の DrawTarget トレイト実装
-impl DrawTarget for Oled {
+/// embedded-graphics の DrawTarget トレイト実装（OledBuffer用）
+impl DrawTarget for OledBuffer {
     type Color = BinaryColor;
     type Error = core::convert::Infallible;
 
@@ -128,8 +145,8 @@ impl DrawTarget for Oled {
                 
                 if byte_idx < BUFFER_SIZE {
                     match color {
-                        BinaryColor::On => self.buffer[byte_idx] |= 1 << bit_idx,
-                        BinaryColor::Off => self.buffer[byte_idx] &= !(1 << bit_idx),
+                        BinaryColor::On => self.data[byte_idx] |= 1 << bit_idx,
+                        BinaryColor::Off => self.data[byte_idx] &= !(1 << bit_idx),
                     }
                 }
             }
@@ -138,7 +155,7 @@ impl DrawTarget for Oled {
     }
 }
 
-impl OriginDimensions for Oled {
+impl OriginDimensions for OledBuffer {
     fn size(&self) -> Size {
         Size::new(DISPLAY_WIDTH as u32, DISPLAY_HEIGHT as u32)
     }

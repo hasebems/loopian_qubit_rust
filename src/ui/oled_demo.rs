@@ -8,9 +8,7 @@ use embedded_graphics::primitives::{
 };
 use embedded_graphics::text::Text;
 
-use crate::devices::ssd1306::Oled;
-
-type DispErr = display_interface::DisplayError;
+use crate::devices::ssd1306::OledBuffer;
 
 pub struct OledDemo {
     step: u8,
@@ -18,22 +16,18 @@ pub struct OledDemo {
 }
 
 #[allow(dead_code)]
-pub fn draw_bringup_screen<I2C>(oled: &mut Oled, i2c: &mut I2C) -> Result<(), DispErr>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    oled.clear();
+pub fn draw_bringup_screen(buffer: &mut OledBuffer) {
+    buffer.clear();
     let outline = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
     let _ = Rectangle::new(Point::new(0, 0), Size::new(128, 64))
         .into_styled(outline)
-        .draw(oled);
+        .draw(buffer);
 
     let style_big = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
     let style_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
-    let _ = Text::new("OLED OK", Point::new(10, 22), style_big).draw(oled);
-    let _ = Text::new("I2C1 GPIO6/7", Point::new(10, 44), style_small).draw(oled);
-    let _ = Text::new("addr 0x3C/0x3D", Point::new(10, 56), style_small).draw(oled);
-    oled.flush(i2c)
+    let _ = Text::new("OLED OK", Point::new(10, 22), style_big).draw(buffer);
+    let _ = Text::new("I2C1 GPIO6/7", Point::new(10, 44), style_small).draw(buffer);
+    let _ = Text::new("addr 0x3C/0x3D", Point::new(10, 56), style_small).draw(buffer);
 }
 
 impl OledDemo {
@@ -42,104 +36,97 @@ impl OledDemo {
     }
 
     /// Executes a single demo step and returns the suggested delay (ms) before the next step.
-    pub fn tick<I2C>(&mut self, oled: &mut Oled, i2c: &mut I2C) -> Result<u64, DispErr>
-    where
-        I2C: embedded_hal::i2c::I2c,
-    {
+    pub fn tick(&mut self, buffer: &mut OledBuffer) -> u64 {
         match self.step {
             0 => {
                 // loop1(): drawPixel + display + delay(2000)
-                oled.clear();
-                let _ = Pixel(Point::new(10, 10), BinaryColor::On).draw(oled);
-                oled.flush(i2c)?;
+                buffer.clear();
+                let _ = Pixel(Point::new(10, 10), BinaryColor::On).draw(buffer);
                 self.step += 1;
-                Ok(2000)
+                2000
             }
             1 => {
-                demo_lines(oled, i2c)?;
+                demo_lines(buffer);
                 self.step += 1;
-                Ok(800)
+                800
             }
             2 => {
-                demo_rects(oled, i2c)?;
+                demo_rects(buffer);
                 self.step += 1;
-                Ok(800)
+                800
             }
             3 => {
-                demo_filled_rects(oled, i2c)?;
+                demo_filled_rects(buffer);
                 self.step += 1;
-                Ok(800)
+                800
             }
             4 => {
-                demo_circles(oled, i2c)?;
+                demo_circles(buffer);
                 self.step += 1;
-                Ok(800)
+                800
             }
             5 => {
-                demo_filled_circles(oled, i2c)?;
+                demo_filled_circles(buffer);
                 self.step += 1;
-                Ok(800)
+                800
             }
             6 => {
-                demo_round_rects(oled, i2c)?;
+                demo_round_rects(buffer);
                 self.step += 1;
-                Ok(800)
+                800
             }
             7 => {
-                demo_filled_round_rects(oled, i2c)?;
+                demo_filled_round_rects(buffer);
                 self.step += 1;
-                Ok(800)
+                800
             }
             8 => {
-                demo_triangles(oled, i2c)?;
+                demo_triangles(buffer);
                 self.step += 1;
-                Ok(800)
+                800
             }
             9 => {
-                demo_filled_triangles(oled, i2c)?;
+                demo_filled_triangles(buffer);
                 self.step += 1;
-                Ok(800)
+                800
             }
             10 => {
-                demo_text(oled, i2c)?;
+                demo_text(buffer);
                 self.step += 1;
-                Ok(1200)
+                1200
             }
             11 => {
-                demo_styles(oled, i2c)?;
+                demo_styles(buffer);
                 self.step += 1;
-                Ok(900)
+                900
             }
             12 => {
                 // scroll/invert are intentionally omitted.
-                demo_bitmap(oled, i2c)?;
+                demo_bitmap(buffer);
                 self.step += 1;
-                Ok(900)
+                900
             }
             13 => {
-                let done = demo_animate_frame(oled, i2c, self.anim_x)?;
+                let done = demo_animate_frame(buffer, self.anim_x);
                 if done {
                     self.anim_x = 0;
                     self.step = 0;
-                    Ok(1000)
+                    1000
                 } else {
                     self.anim_x = self.anim_x.saturating_add(6);
-                    Ok(80)
+                    80
                 }
             }
             _ => {
                 self.step = 0;
-                Ok(200)
+                200
             }
         }
     }
 }
 
-fn demo_lines<I2C>(oled: &mut Oled, i2c: &mut I2C) -> Result<(), DispErr>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    oled.clear();
+fn demo_lines(buffer: &mut OledBuffer) {
+    buffer.clear();
     let style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
     let w = 128;
     let h = 64;
@@ -148,22 +135,17 @@ where
     for x in (0..w).step_by(16) {
         let _ = Line::new(Point::new(0, 0), Point::new(x, h - 1))
             .into_styled(style)
-            .draw(oled);
+            .draw(buffer);
     }
     for y in (0..h).step_by(16) {
         let _ = Line::new(Point::new(0, 0), Point::new(w - 1, y))
             .into_styled(style)
-            .draw(oled);
+            .draw(buffer);
     }
-
-    oled.flush(i2c)
 }
 
-fn demo_rects<I2C>(oled: &mut Oled, i2c: &mut I2C) -> Result<(), DispErr>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    oled.clear();
+fn demo_rects(buffer: &mut OledBuffer) {
+    buffer.clear();
     let style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
     // Reduced from 8 to 5 iterations
@@ -173,17 +155,12 @@ where
             Point::new(inset, inset),
             Size::new(128 - (inset as u32) * 2, 64 - (inset as u32) * 2),
         );
-        let _ = rect.into_styled(style).draw(oled);
+        let _ = rect.into_styled(style).draw(buffer);
     }
-
-    oled.flush(i2c)
 }
 
-fn demo_filled_rects<I2C>(oled: &mut Oled, i2c: &mut I2C) -> Result<(), DispErr>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    oled.clear();
+fn demo_filled_rects(buffer: &mut OledBuffer) {
+    buffer.clear();
     let style = PrimitiveStyle::with_fill(BinaryColor::On);
 
     // Reduced from 8 to 4 iterations
@@ -194,49 +171,34 @@ where
             break;
         }
         let rect = Rectangle::new(Point::new(inset, inset), size);
-        let _ = rect.into_styled(style).draw(oled);
+        let _ = rect.into_styled(style).draw(buffer);
     }
-
-    oled.flush(i2c)
 }
 
-fn demo_circles<I2C>(oled: &mut Oled, i2c: &mut I2C) -> Result<(), DispErr>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    oled.clear();
+fn demo_circles(buffer: &mut OledBuffer) {
+    buffer.clear();
     let style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
     // Reduced iterations
     for r in (6..30).step_by(6) {
         let circle = Circle::new(Point::new(64 - r, 32 - r), (r as u32) * 2);
-        let _ = circle.into_styled(style).draw(oled);
+        let _ = circle.into_styled(style).draw(buffer);
     }
-
-    oled.flush(i2c)
 }
 
-fn demo_filled_circles<I2C>(oled: &mut Oled, i2c: &mut I2C) -> Result<(), DispErr>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    oled.clear();
+fn demo_filled_circles(buffer: &mut OledBuffer) {
+    buffer.clear();
     let style = PrimitiveStyle::with_fill(BinaryColor::On);
 
     // Reduced iterations
     for r in (8..28).step_by(8) {
         let circle = Circle::new(Point::new(64 - r, 32 - r), (r as u32) * 2);
-        let _ = circle.into_styled(style).draw(oled);
+        let _ = circle.into_styled(style).draw(buffer);
     }
-
-    oled.flush(i2c)
 }
 
-fn demo_round_rects<I2C>(oled: &mut Oled, i2c: &mut I2C) -> Result<(), DispErr>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    oled.clear();
+fn demo_round_rects(buffer: &mut OledBuffer) {
+    buffer.clear();
     let style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
     // Reduced from 6 to 4
@@ -249,17 +211,12 @@ where
             ),
             Size::new(6, 6),
         );
-        let _ = rect.into_styled(style).draw(oled);
+        let _ = rect.into_styled(style).draw(buffer);
     }
-
-    oled.flush(i2c)
 }
 
-fn demo_filled_round_rects<I2C>(oled: &mut Oled, i2c: &mut I2C) -> Result<(), DispErr>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    oled.clear();
+fn demo_filled_round_rects(buffer: &mut OledBuffer) {
+    buffer.clear();
     let style = PrimitiveStyleBuilder::new()
         .fill_color(BinaryColor::On)
         .stroke_color(BinaryColor::Off)
@@ -277,17 +234,12 @@ where
             Rectangle::new(Point::new(inset, inset), size),
             Size::new(8, 8),
         );
-        let _ = rect.into_styled(style).draw(oled);
+        let _ = rect.into_styled(style).draw(buffer);
     }
-
-    oled.flush(i2c)
 }
 
-fn demo_triangles<I2C>(oled: &mut Oled, i2c: &mut I2C) -> Result<(), DispErr>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    oled.clear();
+fn demo_triangles(buffer: &mut OledBuffer) {
+    buffer.clear();
     let style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
     // Reduced from 6 to 4
@@ -298,17 +250,12 @@ where
             Point::new(127 - inset, 63 - inset),
             Point::new(inset, 63 - inset),
         );
-        let _ = tri.into_styled(style).draw(oled);
+        let _ = tri.into_styled(style).draw(buffer);
     }
-
-    oled.flush(i2c)
 }
 
-fn demo_filled_triangles<I2C>(oled: &mut Oled, i2c: &mut I2C) -> Result<(), DispErr>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    oled.clear();
+fn demo_filled_triangles(buffer: &mut OledBuffer) {
+    buffer.clear();
     let style = PrimitiveStyle::with_fill(BinaryColor::On);
 
     // Reduced from 5 to 3
@@ -319,50 +266,35 @@ where
             Point::new(127 - inset, 63 - inset),
             Point::new(inset, 63 - inset),
         );
-        let _ = tri.into_styled(style).draw(oled);
+        let _ = tri.into_styled(style).draw(buffer);
     }
-
-    oled.flush(i2c)
 }
 
-fn demo_text<I2C>(oled: &mut Oled, i2c: &mut I2C) -> Result<(), DispErr>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    oled.clear();
+fn demo_text(buffer: &mut OledBuffer) {
+    buffer.clear();
     let style_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
     let style_big = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
 
-    let _ = Text::new("QUBIT2", Point::new(0, 16), style_big).draw(oled);
-    let _ = Text::new("SSD1306 demo", Point::new(0, 40), style_small).draw(oled);
-    let _ = Text::new("I2C shared bus", Point::new(0, 54), style_small).draw(oled);
-
-    oled.flush(i2c)
+    let _ = Text::new("QUBIT2", Point::new(0, 16), style_big).draw(buffer);
+    let _ = Text::new("SSD1306 demo", Point::new(0, 40), style_small).draw(buffer);
+    let _ = Text::new("I2C shared bus", Point::new(0, 54), style_small).draw(buffer);
 }
 
-fn demo_styles<I2C>(oled: &mut Oled, i2c: &mut I2C) -> Result<(), DispErr>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
-    oled.clear();
+fn demo_styles(buffer: &mut OledBuffer) {
+    buffer.clear();
 
     let outline = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
     let _ = Rectangle::new(Point::new(0, 0), Size::new(128, 64))
         .into_styled(outline)
-        .draw(oled);
+        .draw(buffer);
 
     let style_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
-    let _ = Text::new("1) shapes", Point::new(6, 16), style_small).draw(oled);
-    let _ = Text::new("2) text", Point::new(6, 30), style_small).draw(oled);
-    let _ = Text::new("3) bitmap", Point::new(6, 44), style_small).draw(oled);
-
-    oled.flush(i2c)
+    let _ = Text::new("1) shapes", Point::new(6, 16), style_small).draw(buffer);
+    let _ = Text::new("2) text", Point::new(6, 30), style_small).draw(buffer);
+    let _ = Text::new("3) bitmap", Point::new(6, 44), style_small).draw(buffer);
 }
 
-fn demo_bitmap<I2C>(oled: &mut Oled, i2c: &mut I2C) -> Result<(), DispErr>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
+fn demo_bitmap(buffer: &mut OledBuffer) {
     // 16x16 1bpp "X" bitmap
     #[rustfmt::skip]
     const RAW: [u8; 32] = [
@@ -384,25 +316,19 @@ where
         0b1000_0001, 0b0000_0001,
     ];
 
-    oled.clear();
+    buffer.clear();
     let raw: ImageRaw<BinaryColor> = ImageRaw::new(&RAW, 16);
-    let _ = Image::new(&raw, Point::new(56, 24)).draw(oled);
+    let _ = Image::new(&raw, Point::new(56, 24)).draw(buffer);
 
     let style_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
-    let _ = Text::new("bitmap", Point::new(0, 12), style_small).draw(oled);
-
-    oled.flush(i2c)
+    let _ = Text::new("bitmap", Point::new(0, 12), style_small).draw(buffer);
 }
 
-fn demo_animate_frame<I2C>(oled: &mut Oled, i2c: &mut I2C, x: u8) -> Result<bool, DispErr>
-where
-    I2C: embedded_hal::i2c::I2c,
-{
+fn demo_animate_frame(buffer: &mut OledBuffer, x: u8) -> bool {
     let x = x.min(128 - 10);
-    oled.clear();
+    buffer.clear();
     let style = PrimitiveStyle::with_fill(BinaryColor::On);
     let rect = Rectangle::new(Point::new(x as i32, 28), Size::new(10, 10));
-    let _ = rect.into_styled(style).draw(oled);
-    oled.flush(i2c)?;
-    Ok(x >= (128 - 10))
+    let _ = rect.into_styled(style).draw(buffer);
+    x >= (128 - 10)
 }
