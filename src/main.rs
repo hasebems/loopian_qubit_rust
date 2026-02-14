@@ -382,7 +382,7 @@ async fn core1_i2c_task(mut i2c: I2c<'static, I2C1, i2c::Async>) {
     }
 
     // OLED初期化
-    if let Err(_) = oled.init(&mut i2c) {
+    if oled.init(&mut i2c).is_err() {
         ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -397,7 +397,7 @@ async fn core1_i2c_task(mut i2c: I2c<'static, I2C1, i2c::Async>) {
         let buffer = BUFFER_TO_DISPLAY.receive().await;
 
         DEBUG_STATE.store(3, Ordering::Relaxed); // flush中
-        if let Err(_) = oled.flush_buffer(&buffer, &mut i2c) {
+        if oled.flush_buffer(&buffer, &mut i2c).is_err() {
             ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
         }
 
