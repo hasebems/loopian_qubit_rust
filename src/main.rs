@@ -28,6 +28,10 @@ use embassy_rp::usb::{Driver, InterruptHandler as UsbInterruptHandler};
 use embassy_usb::class::midi::{MidiClass, Receiver, Sender};
 use embassy_usb::{Builder, Config};
 
+const PCA9544_NUM_CHANNELS: u8 = 4; // PCA9544のチャネル数
+const PCA9544_NUM_DEVICES: u8 = 1;  // PCA9544の台数
+const AT42QT_KEYS_PER_DEVICE: u8 = 6; // AT42QT1070
+
 bind_interrupts!(struct Irqs {
     I2C1_IRQ => I2cInterruptHandler<I2C1>;
     USBCTRL_IRQ => UsbInterruptHandler<USB>;
@@ -366,12 +370,9 @@ async fn core1_i2c_task(mut i2c: I2c<'static, I2C1, i2c::Async>) {
     let mut oled = Oled::new();
 
     // --- init phase ---
-    // AT42QT1070 が PCA9544 越しで16個分
-    for _mux in 0..4usize {
-        for ch in 0..4usize {
-            pca.select(&mut i2c, ch as u8).await.ok();
-            at42.init(&mut i2c).await.ok();
-        }
+    for ch in 0..PCA9544_NUM_CHANNELS * PCA9544_NUM_DEVICES {
+        pca.select(&mut i2c, ch / PCA9544_NUM_CHANNELS, ch % PCA9544_NUM_CHANNELS).await.ok();
+        at42.init(&mut i2c).await.ok();
     }
 
     // OLED初期化
@@ -380,8 +381,7 @@ async fn core1_i2c_task(mut i2c: I2c<'static, I2C1, i2c::Async>) {
     }
 
     // 初期状態
-    let mut _prev = [0u8; 16];
-    let mut touch_counter = 0u32;
+    let mut prev = [0u16; (PCA9544_NUM_CHANNELS * PCA9544_NUM_DEVICES * AT42QT_KEYS_PER_DEVICE) as usize];
 
     // Task Loop
     loop {
@@ -398,21 +398,18 @@ async fn core1_i2c_task(mut i2c: I2c<'static, I2C1, i2c::Async>) {
         BUFFER_FROM_DISPLAY.send(buffer).await;
         DEBUG_STATE.store(0, Ordering::Relaxed); // 正常動作
 
-        // Touch Scan（10回に1回だけ実行）
-        touch_counter += 1;
-        if touch_counter % 10 == 0 {
-            DEBUG_STATE.store(4, Ordering::Relaxed); // Touch scan中
-            for mux in 0..4usize {
-                for ch in 0..4usize {
-                    let sid = mux * 4 + ch;
-                    pca.select(&mut i2c, ch as u8).await.ok();
-                    if let Ok(rddata) = at42.read_state(&mut i2c).await {
-                        _prev[sid] = rddata;
-                    }
+        // Touch Scan
+        DEBUG_STATE.store(4, Ordering::Relaxed); // Touch scan中
+        for ch in 0..PCA9544_NUM_CHANNELS * PCA9544_NUM_DEVICES {
+            pca.select(&mut i2c, ch / PCA9544_NUM_CHANNELS, ch % PCA9544_NUM_CHANNELS).await.ok();
+            for key in 0..AT42QT_KEYS_PER_DEVICE {
+                if let Ok(rddata) = at42.read_state(&mut i2c, key, false).await {
+                    let sid = (ch * AT42QT_KEYS_PER_DEVICE + key) as usize;
+                    prev[sid] = rddata;
                 }
             }
-            DEBUG_STATE.store(0, Ordering::Relaxed); // 正常動作
         }
+        DEBUG_STATE.store(0, Ordering::Relaxed); // 正常動作
     }
 }
 
