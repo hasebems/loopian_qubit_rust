@@ -2,28 +2,32 @@
 
 ## 概要
 
-- Seeed XIAO RP2350 を組み込みRustで動作させます
-- 擬似マルチタスク Embassy を Multicore 上で動作させるためのテンプレートです
-- 主に GPIO, I2C, USB MIDI 等の下回りにアクセスする処理を提供します
+- 2026/2 より開発開始
+- Seeed XIAO RP2350 を 組み込みRust & Embassy で開発
+- Arduino 版 Loopian::QUBIT の機能を Rust に移植
+- かなりの部分が github copilot による記述
 
 ## 提供機能（タスク）詳細
 
-### I2C
+### Touch Sensor による MIDI 送信処理
 
-- SSD1306 による OLED Display の表示機能
-- AT42QT1070 によるタッチセンサー機能
+- QUBIT のタッチ処理(QubitTouch)を Rust に移植
+- I2C(Core1) で読み込んだ生値を TOUCH_RAW_DATA に入れ、Mutex で保護
+- Core0 の qubit_touch_task で読み込み、解析して MIDI を生成
+
+### I2C (Core1)
+
+- SSD1306 による OLED Display の表示機能の実装
+- AT42QT1070 によるタッチセンサー機能の実装
     - PCA9544 により複数個のセンサーを読み込み可能
 
-### UI
-
-- SSD1306 に提供する画像を生成
-
-### NeoPixel
+### NeoPixel (Core0)
 
 - NeoPixel(RGBW) をPIOで制御可能
+- USB MIDI の受信メッセージに反応させる
+- USB MIDI の送信メッセージにも反応させる
 
 ## USB MIDI
 
 - USB MIDI 受信機能
 - USB MIDI 送信機能
-    - 現状は半音ずつ上げながら Note On/Off を繰り返し送信

@@ -289,8 +289,8 @@ async fn qubit_touch_task(mut sender: Sender<'static, Driver<'static, USB>>) {
                 let buf = send_buffer.borrow();
                 packets[0..idx].copy_from_slice(&buf[0..idx]);
             }
-            for i in 0..idx {
-                sender.write_packet(&packets[i]).await.ok();
+            for packet in packets.iter().take(idx) {
+                sender.write_packet(packet).await.ok();
             }
             *send_index.borrow_mut() = 0;
         }
