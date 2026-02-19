@@ -89,8 +89,8 @@ where
     real_crnt_note: u8, // MIDI Note number
     is_updated: bool,
     is_touched: bool,
-    touching_time: u16,
-    no_update_time: u16,
+    touching_time: u32,
+    no_update_time: u32,
     midi_callback: Option<F>, // MIDI callback function
 }
 impl<F> TouchPoint<F>
@@ -226,7 +226,7 @@ where
     fn maybe_released(&mut self) {
         if self.no_update_time + 5 > self.touching_time {
             // 5回以上更新がなかったら、タッチポイントを離れたとみなす
-            self.touching_time += 1;
+            self.touching_time = self.touching_time.wrapping_add(1);
             return;
         }
         // MIDI Note Off
@@ -250,7 +250,7 @@ where
         self.intensity
     }
     fn clear_updated_flag(&mut self) {
-        self.touching_time += 1;
+        self.touching_time = self.touching_time.wrapping_add(1);
         self.no_update_time = self.touching_time;
         self.is_updated = false;
     }
@@ -630,15 +630,13 @@ where
     }*/
     fn erase_touch_point(&mut self) {
         for tp in self.touch_points.iter_mut() {
-            // タッチされていないポイントは処理不要（これがないと毎回無駄処理が蓄積）
-            if !tp.is_touched() {
-                continue;
-            }
-
-            if !tp.is_updated() {
-                tp.maybe_released();
-            } else {
-                tp.clear_updated_flag(); // Clear the updated flag for the next cycle
+            // タッチされていないポイントは処理不要
+            if tp.is_touched() {
+                if !tp.is_updated() && tp.is_touched() {
+                    tp.maybe_released();
+                } else {
+                    tp.clear_updated_flag(); // Clear the updated flag for the next cycle
+                }
             }
         }
     }
