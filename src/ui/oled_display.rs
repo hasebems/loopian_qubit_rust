@@ -1,3 +1,4 @@
+use core::fmt::Write;
 use embedded_graphics::image::{Image, ImageRaw};
 use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::mono_font::ascii::{FONT_6X10, FONT_10X20};
@@ -8,7 +9,6 @@ use embedded_graphics::primitives::{
 };
 use embedded_graphics::text::Text;
 use heapless::String;
-use core::fmt::Write;
 
 use crate::devices::ssd1306::OledBuffer;
 
@@ -138,15 +138,15 @@ fn display_info(buffer: &mut OledBuffer, var1: u8, var2: u8, var3: u8) {
         .draw(buffer);
 
     let style_big = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-    
+
     let mut text1: String<32> = String::new();
     let _ = write!(text1, "var1: {}", var1);
     let _ = Text::new(&text1, Point::new(6, 16), style_big).draw(buffer);
-    
+
     let mut text2: String<32> = String::new();
     let _ = write!(text2, "var2: {}", var2);
     let _ = Text::new(&text2, Point::new(6, 36), style_big).draw(buffer);
-    
+
     let mut text3: String<32> = String::new();
     let _ = write!(text3, "var3: {}", var3);
     let _ = Text::new(&text3, Point::new(6, 56), style_big).draw(buffer);

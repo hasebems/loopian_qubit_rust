@@ -267,7 +267,7 @@ async fn ringled_task(
             // Convert RGB8 to RGBW (White is controlled by MIDI)
             let txon = txkey_state
                 .iter()
-                .any(|&tx| tx.map_or(false, |tx| tx as usize == i));
+                .any(|&tx| tx.is_some_and(|tx| tx as usize == i));
             *led = RGBW {
                 r: color.r / 4, // RGBを少し暗くして白とバランスを取る
                 g: color.g / 4,
@@ -330,9 +330,9 @@ async fn qubit_touch_task(mut sender: Sender<'static, Driver<'static, USB>>) {
                 } else {
                     status | 0x0c
                 };
-                if let Err(_) = sender
+                if sender
                     .write_packet(&[status >> 4, status, packet.1, packet.2])
-                    .await
+                    .await.is_err()
                 {
                     // エラーハンドリング
                     ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
