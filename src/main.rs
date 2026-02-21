@@ -105,6 +105,17 @@ static TOUCH_RAW_DATA: Mutex<
             * constants::AT42QT_KEYS_PER_DEVICE) as usize],
 );
 
+// RINGLED用メッセージチャンネル
+static RINGLED_MESSAGE: Channel<
+    CriticalSectionRawMutex,
+    (u8, f32),
+    { constants::RINGLED_MESSAGE_SIZE },
+> = Channel::new();
+
+// タッチイベントのデータ構造
+#[derive(Copy, Clone, Default)]
+struct TouchEvent(u8, u8, u8, f32); // (status, note, velocity, location)
+
 #[cortex_m_rt::entry]
 fn main() -> ! {
     let p = embassy_rp::init(Default::default());
@@ -202,7 +213,7 @@ fn main() -> ! {
             Ok(token) => spawner.spawn(token),
             Err(_) => ERROR_COUNT.store(22, Ordering::Relaxed),
         }
-        match neopixel_task(common, sm0, p.DMA_CH0, p.PIN_26, ws2812_program) {
+        match ringled_task(common, sm0, p.DMA_CH0, p.PIN_26, ws2812_program) {
             Ok(token) => spawner.spawn(token),
             Err(_) => ERROR_COUNT.store(23, Ordering::Relaxed),
         }
@@ -210,7 +221,7 @@ fn main() -> ! {
 }
 
 #[embassy_executor::task]
-async fn neopixel_task(
+async fn ringled_task(
     mut common: embassy_rp::pio::Common<'static, PIO0>,
     sm: embassy_rp::pio::StateMachine<'static, PIO0, 0>,
     dma: Peri<'static, DMA_CH0>,
@@ -227,27 +238,41 @@ async fn neopixel_task(
     let mut ws2812 = RgbwPioWs2812::new(&mut common, sm, dma, Irqs, pin, program);
 
     let mut ticker = Ticker::every(embassy_time::Duration::from_millis(20));
-    let mut j: i32 = 0;
+    let mut speed: i32 = 0;
 
     // LEDの数
-    const NUM_LEDS: usize = 6;
+    const NUM_LEDS: usize = constants::TOTAL_QT_KEYS;
     let mut data = [RGBW::default(); NUM_LEDS];
+    let mut rxkey_state = [false; NUM_LEDS]; // 受信したNote On/Offの状態を保持
+    let mut txkey_state = [false; NUM_LEDS]; // 送信したNote On/Offの状態を保持
 
     loop {
+        let (cmd, location) = RINGLED_MESSAGE
+            .try_receive()
+            .unwrap_or((constants::RINGLED_CMD_NONE, 0.0)); // ここは止まらない
+        let num = (location as u8)
+            .saturating_sub(constants::KEYBD_LO)
+            .clamp(0, 5);
+        match cmd {
+            constants::RINGLED_CMD_RX_ON => rxkey_state[num as usize] = true,
+            constants::RINGLED_CMD_RX_OFF => rxkey_state[num as usize] = false,
+            constants::RINGLED_CMD_TX_ON => txkey_state[num as usize] = true,
+            constants::RINGLED_CMD_TX_OFF => txkey_state[num as usize] = false,
+            _ => {}
+        }
         for (i, led) in data.iter_mut().enumerate().take(NUM_LEDS) {
-            let color = wheel(j.wrapping_add(i as i32 * 256 / NUM_LEDS as i32) as u8);
+            let color = wheel(speed.wrapping_add(i as i32 * 16) as u8);
             // Convert RGB8 to RGBW (White is controlled by MIDI)
-            let w = 0; //WHITE_LEVEL.load(Ordering::Relaxed);
             *led = RGBW {
                 r: color.r,
                 g: color.g,
                 b: color.b,
-                a: smart_leds::White(w),
+                a: smart_leds::White(if rxkey_state[i] { 255 } else { 0 }),
             };
         }
         ws2812.write(&data).await;
 
-        j = j.wrapping_add(2); // 色の変化速度
+        speed = speed.wrapping_add(2); // 色の変化速度
         ticker.next().await;
     }
 }
@@ -256,11 +281,11 @@ async fn neopixel_task(
 async fn qubit_touch_task(mut sender: Sender<'static, Driver<'static, USB>>) {
     use core::cell::RefCell;
     use gen_ev::qtouch::QubitTouch;
-    let send_buffer = RefCell::new([[0u8; 4]; 8]);
+    let send_buffer = RefCell::new([TouchEvent::default(); 8]);
     let send_index = RefCell::new(0);
-    let mut qt = QubitTouch::new(|status, note, velocity| {
+    let mut qt = QubitTouch::new(|status, note, velocity, location| {
         // MIDIコールバック: タッチイベントをMIDIパケットに変換して送信
-        let packet = [(status & 0xf0) >> 4, status, note, velocity];
+        let packet = TouchEvent(status, note, velocity, location);
         let mut buf = send_buffer.borrow_mut();
         let mut idx = send_index.borrow_mut();
         if *idx < buf.len() {
@@ -288,13 +313,20 @@ async fn qubit_touch_task(mut sender: Sender<'static, Driver<'static, USB>>) {
             // no event
         } else if idx < MAX_EVENT {
             // await前にバッファをコピーして借用を解放
-            let mut packets = [[0u8; 4]; MAX_EVENT];
+            let mut packets = [TouchEvent::default(); MAX_EVENT];
             {
                 let buf = send_buffer.borrow();
                 packets[0..idx].copy_from_slice(&buf[0..idx]);
             }
             for packet in packets.iter().take(idx) {
-                sender.write_packet(packet).await.ok();
+                if let Err(_) = sender
+                    .write_packet(&[(packet.0 & 0xf0) >> 4, packet.0, packet.1, packet.2])
+                    .await
+                {
+                    // エラーハンドリング
+                    ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
+                }
+                RINGLED_MESSAGE.send((packet.0, packet.3)).await;
             }
             *send_index.borrow_mut() = 0;
         } else {
@@ -323,22 +355,26 @@ async fn midi_rx_task(mut receiver: Receiver<'static, Driver<'static, USB>>) {
                 for packet in buf[0..n].chunks(4) {
                     if packet.len() == 4 {
                         let status = packet[1];
-                        let _note = packet[2];
+                        let note = packet[2];
                         let velocity = packet[3];
 
                         // Note On (Channel 0-15)
                         if (status & 0xF0) == 0x90 {
                             if velocity > 0 {
-                                // Turn on White
-                                //WHITE_LEVEL.store(255, Ordering::Relaxed);
+                                RINGLED_MESSAGE
+                                    .send((constants::RINGLED_CMD_RX_ON, note as f32))
+                                    .await;
                             } else {
-                                // Note On with vel 0 is Note Off
-                                //WHITE_LEVEL.store(0, Ordering::Relaxed);
+                                RINGLED_MESSAGE
+                                    .send((constants::RINGLED_CMD_RX_OFF, note as f32))
+                                    .await;
                             }
                         }
                         // Note Off
                         else if (status & 0xF0) == 0x80 {
-                            //WHITE_LEVEL.store(0, Ordering::Relaxed);
+                            RINGLED_MESSAGE
+                                .send((constants::RINGLED_CMD_RX_OFF, note as f32))
+                                .await;
                         }
                     }
                 }
@@ -478,7 +514,7 @@ async fn core1_oled_ui_task() {
 pub static PICOTOOL_ENTRIES: [rp235x_hal::binary_info::EntryAddr; 5] = [
     rp235x_hal::binary_info::rp_cargo_bin_name!(),
     rp235x_hal::binary_info::rp_cargo_version!(),
-    rp235x_hal::binary_info::rp_program_description!(c"RP2350 Template"),
+    rp235x_hal::binary_info::rp_program_description!(c"Loopian::QUBIT"),
     rp235x_hal::binary_info::rp_cargo_homepage_url!(),
     rp235x_hal::binary_info::rp_program_build_attribute!(),
 ];
