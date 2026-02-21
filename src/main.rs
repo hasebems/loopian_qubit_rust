@@ -75,7 +75,6 @@ static EXECUTOR1: StaticCell<embassy_executor::Executor> = StaticCell::new();
 // OLEDバッファ転送用チャンネル（ダブルバッファリング）
 use devices::ssd1306::OledBuffer;
 
-use crate::constants::TOTAL_QT_KEYS;
 static BUFFER_TO_DISPLAY: Channel<
     embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
     OledBuffer,
@@ -89,11 +88,11 @@ static BUFFER_FROM_DISPLAY: Channel<
 
 // デバッグ用状態フラグ（LED点滅パターンで表示）
 // 0: 正常動作, 1-9: 各種状態, 10以上: エラー
-static DEBUG_STATE: AtomicU8 = AtomicU8::new(0);
+pub static DEBUG_STATE: AtomicU8 = AtomicU8::new(0);
 static ERROR_COUNT: AtomicU8 = AtomicU8::new(0);
 
 // タッチセンサの生データ格納用（16bit/key）
-static TOUCH_RAW_DATA: Mutex<
+pub static TOUCH_RAW_DATA: Mutex<
     CriticalSectionRawMutex,
     [u16; (constants::PCA9544_NUM_CHANNELS
         * constants::PCA9544_NUM_DEVICES
@@ -408,31 +407,18 @@ async fn core1_i2c_task(mut i2c: I2c<'static, I2C1, i2c::Async>) {
     let mut oled = Oled::new();
 
     // --- init phase ---
-    for ch in 0..constants::PCA9544_NUM_CHANNELS * constants::PCA9544_NUM_DEVICES {
-        pca.select(
-            &mut i2c,
-            ch / constants::PCA9544_NUM_CHANNELS,
-            ch % constants::PCA9544_NUM_CHANNELS,
-        )
-        .await
-        .ok();
-        at42.init(&mut i2c).await.ok();
-    }
+    let mut read_touch = gen_ev::read_touch::ReadTouch::new(); // タッチイベントの状態を保持する構造体を生成
+    read_touch.init_touch_sensors(&pca, &mut at42, &mut i2c).await;
 
     // OLED初期化
     if oled.init(&mut i2c).is_err() {
         ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 
-    // refference value for touch raw data
-    let mut refference = [0u16; TOTAL_QT_KEYS];
-    let mut ref_idx_num = 0;
-
     // Task Loop
     loop {
         // OLED更新:UIタスクから描画済みバッファを受信（非ブロッキング）
         if let Ok(buffer) = BUFFER_TO_DISPLAY.try_receive() {
-            DEBUG_STATE.store(3, Ordering::Relaxed); // flush中
             if oled.flush_buffer(&buffer, &mut i2c).is_err() {
                 ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
             }
@@ -442,38 +428,9 @@ async fn core1_i2c_task(mut i2c: I2c<'static, I2C1, i2c::Async>) {
                 ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
             }
         }
-        DEBUG_STATE.store(0, Ordering::Relaxed); // 正常動作
 
-        // Touch Scan
-        {
-            let mut data = TOUCH_RAW_DATA.lock().await;
-            DEBUG_STATE.store(4, Ordering::Relaxed); // Touch scan中
-            for ch in 0..constants::PCA9544_NUM_CHANNELS * constants::PCA9544_NUM_DEVICES {
-                pca.select(
-                    &mut i2c,
-                    ch / constants::PCA9544_NUM_CHANNELS,
-                    ch % constants::PCA9544_NUM_CHANNELS,
-                )
-                .await
-                .ok();
-                for key in 0..constants::AT42QT_KEYS_PER_DEVICE {
-                    if let Ok(raw_data) = at42.read_state(&mut i2c, key, false).await {
-                        let sid = (ch * constants::AT42QT_KEYS_PER_DEVICE + key) as usize;
-                        if raw_data >= refference[sid] {
-                            data[sid] = raw_data - refference[sid];
-                        } else {
-                            data[sid] = 0;
-                        }
-                    }
-                }
-            }
-        }
-        // Refference Update (1key/loop)
-        if let Ok(ref_data) = at42.read_state(&mut i2c, ref_idx_num as u8, true).await {
-            refference[ref_idx_num] = ref_data;
-            ref_idx_num = (ref_idx_num + 1) % TOTAL_QT_KEYS;
-        }
-        DEBUG_STATE.store(0, Ordering::Relaxed); // 正常動作
+        // タッチセンサのスキャンとイベント処理
+        read_touch.touch_sensor_scan(&pca, &mut at42, &mut i2c).await;
 
         // 他のタスクに処理を譲る
         embassy_futures::yield_now().await;
@@ -489,19 +446,16 @@ async fn core1_oled_ui_task() {
 
     loop {
         // 空バッファを受信
-        DEBUG_STATE.store(1, Ordering::Relaxed); // UIタスクがバッファ待ち
         let mut buffer = BUFFER_FROM_DISPLAY.receive().await;
 
         // 描画
         let state = DEBUG_STATE.load(Ordering::Relaxed);
         let errors = ERROR_COUNT.load(Ordering::Relaxed);
-        DEBUG_STATE.store(5, Ordering::Relaxed); // 描画中
         let delay = demo.tick(&mut buffer, state, errors, counter);
         counter = counter.wrapping_add(1);
 
         // 描画済みバッファを送信
         BUFFER_TO_DISPLAY.send(buffer).await;
-        DEBUG_STATE.store(0, Ordering::Relaxed); // 正常動作
 
         // 次のステップまで待機
         Timer::after_millis(delay).await;
