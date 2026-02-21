@@ -13,7 +13,6 @@ pub const TOUCH_THRESHOLD: u16 = 40; // Threshold for touch point detection
 pub const CLOSE_RANGE: f32 = 3.0; // 同じタッチと見做される 10msec あたりの動作範囲
 pub const FINGER_RANGE: usize = 3; // Maximum serial numbers of one touch point
 pub const HISTERESIS: f32 = 0.7; // Hysteresis value for touch point detection
-pub const MAX_TOUCH_POINTS: usize = 4; // Maximum number of touch points to track
 
 // =========================================================
 //      Pad Class
@@ -84,6 +83,7 @@ pub struct TouchPoint<F>
 where
     F: Fn(u8, u8, u8, f32) + Clone,
 {
+    id: usize,
     center_location: f32,
     intensity: i16,
     real_crnt_note: u8, // MIDI Note number
@@ -103,8 +103,9 @@ where
     const OFFSET_NOTE: u8 = constants::KEYBD_LO - 4;
 
     /// Constructor は起動時に最大数分呼ばれる
-    fn new() -> Self {
+    fn new(id: usize) -> Self {
         TouchPoint {
+            id,
             center_location: Self::INIT_VAL, // Invalid location initially
             intensity: 0,
             real_crnt_note: 0, // Initialize to 0, will be set when a touch is detected
@@ -145,7 +146,7 @@ where
             // MIDI Note On
             if let Some(ref midi_callback) = self.midi_callback {
                 midi_callback(
-                    constants::RINGLED_CMD_TX_ON,
+                    constants::RINGLED_CMD_TX_ON | self.id as u8,
                     self.real_crnt_note + Self::OFFSET_NOTE,
                     self.intensity_to_velocity(self.intensity),
                     self.center_location,
@@ -196,13 +197,13 @@ where
                 && updated_note != self.real_crnt_note
             {
                 midi_callback(
-                    constants::RINGLED_CMD_TX_ON,
+                    constants::RINGLED_CMD_TX_ON | self.id as u8,
                     updated_note + Self::OFFSET_NOTE,
                     self.intensity_to_velocity(self.intensity),
                     self.center_location,
                 );
                 midi_callback(
-                    constants::RINGLED_CMD_TX_OFF,
+                    constants::RINGLED_CMD_TX_MOVED | self.id as u8,
                     self.real_crnt_note + Self::OFFSET_NOTE,
                     0x40,
                     self.center_location,
@@ -235,7 +236,7 @@ where
         // MIDI Note Off
         if let Some(ref midi_callback) = self.midi_callback {
             midi_callback(
-                constants::RINGLED_CMD_TX_OFF,
+                constants::RINGLED_CMD_TX_OFF | self.id as u8,
                 self.real_crnt_note + Self::OFFSET_NOTE,
                 0x40,
                 self.center_location,
@@ -348,7 +349,7 @@ where
     F: Fn(u8, u8, u8, f32) + Clone,
 {
     pads: [Pad; MAX_PADS as usize], // パッドの状態を保持する配列
-    touch_points: [TouchPoint<F>; MAX_TOUCH_POINTS], // Store detected touch points
+    touch_points: [TouchPoint<F>; constants::MAX_TOUCH_POINTS], // Store detected touch points
     midi_callback: F,               // MIDI callback function
     touch_count: usize,             // Current number of touch points
     _debug: i16,
@@ -360,7 +361,7 @@ where
     pub fn new(cb: F) -> Self {
         QubitTouch {
             pads: [Pad::new(); MAX_PADS as usize],
-            touch_points: core::array::from_fn(|_| TouchPoint::<F>::new()),
+            touch_points: core::array::from_fn(|i| TouchPoint::<F>::new(i)),
             midi_callback: cb,
             touch_count: 0,
             _debug: 0,
@@ -480,8 +481,8 @@ where
     }*/
     pub fn seek_and_update_touch_point(&mut self) {
         const INIT_VAL: f32 = 100.0; // Invalid location initially
-        let mut temp_touch_point: [(f32, f32, i16); MAX_TOUCH_POINTS] =
-            [(INIT_VAL, INIT_VAL, 0); MAX_TOUCH_POINTS];
+        let mut temp_touch_point: [(f32, f32, i16); constants::MAX_TOUCH_POINTS] =
+            [(INIT_VAL, INIT_VAL, 0); constants::MAX_TOUCH_POINTS];
         let mut temp_index = 0;
 
         // 1: 全パッドを走査し、差分の符号が変化した箇所をタッチポイントとみなし、temp_touch_point に保存
@@ -503,7 +504,7 @@ where
                         0,
                     );
                     temp_index += 1;
-                    if temp_index >= MAX_TOUCH_POINTS {
+                    if temp_index >= constants::MAX_TOUCH_POINTS {
                         break; // Prevent overflow of touch points
                     }
                 }

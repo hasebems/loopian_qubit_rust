@@ -11,7 +11,7 @@ pub struct ReadTouch {
 }
 
 impl ReadTouch {
-    const ADRS_CONVERTION: [u8; 4] = [3, 2, 1, 0];
+    const CH_CONVERTION: [u8; 4] = [3, 2, 1, 0];
 
     pub fn new() -> Self {
         Self {
@@ -26,11 +26,12 @@ impl ReadTouch {
         i2c: &mut I2c<'static, I2C1, i2c::Async>,
     ) {
         for ch in 0..constants::PCA9544_NUM_CHANNELS * constants::PCA9544_NUM_DEVICES {
-            let dev = Self::ADRS_CONVERTION[(ch / constants::PCA9544_NUM_CHANNELS) as usize];
-            let ch_in_dev = ch % constants::PCA9544_NUM_CHANNELS;
+            let dev = ch / constants::PCA9544_NUM_CHANNELS;
+            let ch_in_dev = Self::CH_CONVERTION[(ch % constants::PCA9544_NUM_CHANNELS) as usize];
             pca.select(i2c, dev, ch_in_dev).await.ok();
             at42.init(i2c).await.ok();
-            if ch_in_dev == constants::PCA9544_NUM_CHANNELS - 1 {
+            // PCA9544のチャネルが最後のときに切断する
+            if ch % constants::PCA9544_NUM_CHANNELS == constants::PCA9544_NUM_CHANNELS - 1 {
                 pca.disconnect(i2c, dev).await.ok();
             }
         }
@@ -44,8 +45,8 @@ impl ReadTouch {
     ) {
         let mut data = TOUCH_RAW_DATA.lock().await;
         for ch in 0..constants::PCA9544_NUM_CHANNELS * constants::PCA9544_NUM_DEVICES {
-            let dev = Self::ADRS_CONVERTION[(ch / constants::PCA9544_NUM_CHANNELS) as usize];
-            let ch_in_dev = ch % constants::PCA9544_NUM_CHANNELS;
+            let dev = ch / constants::PCA9544_NUM_CHANNELS;
+            let ch_in_dev = Self::CH_CONVERTION[(ch % constants::PCA9544_NUM_CHANNELS) as usize];
             pca.select(i2c, dev, ch_in_dev).await.ok();
             for key in 0..constants::AT42QT_KEYS_PER_DEVICE {
                 if let Ok(raw_data) = at42.read_state(i2c, key, false).await {
@@ -62,7 +63,8 @@ impl ReadTouch {
                     }
                 }
             }
-            if ch_in_dev == constants::PCA9544_NUM_CHANNELS - 1 {
+            // PCA9544のチャネルが最後のときに切断する
+            if ch % constants::PCA9544_NUM_CHANNELS == constants::PCA9544_NUM_CHANNELS - 1 {
                 pca.disconnect(i2c, dev).await.ok();
             }
         }

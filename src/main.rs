@@ -243,30 +243,36 @@ async fn ringled_task(
     const NUM_LEDS: usize = constants::TOTAL_QT_KEYS;
     let mut data = [RGBW::default(); NUM_LEDS];
     let mut rxkey_state = [false; NUM_LEDS]; // 受信したNote On/Offの状態を保持
-    let mut txkey_state = [false; NUM_LEDS]; // 送信したNote On/Offの状態を保持
+    let mut txkey_state: [Option<u8>; constants::MAX_TOUCH_POINTS] =
+        [None; constants::MAX_TOUCH_POINTS]; // 送信したNote On/Offの状態を保持
 
     loop {
         let (cmd, location) = RINGLED_MESSAGE
             .try_receive()
             .unwrap_or((constants::RINGLED_CMD_NONE, 0.0)); // ここは止まらない
-        let num = (location as u8)
-            .saturating_sub(constants::KEYBD_LO)
-            .clamp(0, 5);
-        match cmd {
-            constants::RINGLED_CMD_RX_ON => rxkey_state[num as usize] = true,
-            constants::RINGLED_CMD_RX_OFF => rxkey_state[num as usize] = false,
-            constants::RINGLED_CMD_TX_ON => txkey_state[num as usize] = true,
-            constants::RINGLED_CMD_TX_OFF => txkey_state[num as usize] = false,
-            _ => {}
+        let num = location.clamp(0.0, (NUM_LEDS - 1) as f32) as usize; // 安全のために位置をクランプ
+        if cmd == constants::RINGLED_CMD_RX_ON {
+            rxkey_state[num] = true;
+        } else if cmd == constants::RINGLED_CMD_RX_OFF {
+            rxkey_state[num] = false;
+        } else if cmd & 0xf0 == constants::RINGLED_CMD_TX_ON {
+            txkey_state[(cmd & 0x0f).clamp(0, (constants::MAX_TOUCH_POINTS - 1) as u8) as usize] =
+                Some(num as u8);
+        } else if cmd & 0xf0 == constants::RINGLED_CMD_TX_OFF {
+            txkey_state[(cmd & 0x0f).clamp(0, (constants::MAX_TOUCH_POINTS - 1) as u8) as usize] =
+                None;
         }
         for (i, led) in data.iter_mut().enumerate().take(NUM_LEDS) {
             let color = wheel(speed.wrapping_add(i as i32 * 16) as u8);
             // Convert RGB8 to RGBW (White is controlled by MIDI)
+            let txon = txkey_state
+                .iter()
+                .any(|&tx| tx.map_or(false, |tx| tx as usize == i));
             *led = RGBW {
-                r: color.r,
-                g: color.g,
-                b: color.b,
-                a: smart_leds::White(if rxkey_state[i] { 255 } else { 0 }),
+                r: color.r / 4, // RGBを少し暗くして白とバランスを取る
+                g: color.g / 4,
+                b: color.b / 4,
+                a: smart_leds::White(if rxkey_state[i] || txon { 255 } else { 0 }),
             };
         }
         ws2812.write(&data).await;
@@ -318,8 +324,14 @@ async fn qubit_touch_task(mut sender: Sender<'static, Driver<'static, USB>>) {
                 packets[0..idx].copy_from_slice(&buf[0..idx]);
             }
             for packet in packets.iter().take(idx) {
+                let status = packet.0 & 0xf0; // コマンド部分
+                let status = if status == constants::RINGLED_CMD_TX_MOVED {
+                    0x8c // 移動イベントはNote Offとして扱う
+                } else {
+                    status | 0x0c
+                };
                 if let Err(_) = sender
-                    .write_packet(&[(packet.0 & 0xf0) >> 4, packet.0, packet.1, packet.2])
+                    .write_packet(&[status >> 4, status, packet.1, packet.2])
                     .await
                 {
                     // エラーハンドリング
@@ -408,7 +420,9 @@ async fn core1_i2c_task(mut i2c: I2c<'static, I2C1, i2c::Async>) {
 
     // --- init phase ---
     let mut read_touch = touch::read_touch::ReadTouch::new(); // タッチイベントの状態を保持する構造体を生成
-    read_touch.init_touch_sensors(&pca, &mut at42, &mut i2c).await;
+    read_touch
+        .init_touch_sensors(&pca, &mut at42, &mut i2c)
+        .await;
 
     // OLED初期化
     if oled.init(&mut i2c).is_err() {
@@ -430,7 +444,9 @@ async fn core1_i2c_task(mut i2c: I2c<'static, I2C1, i2c::Async>) {
         }
 
         // タッチセンサのスキャンとイベント処理
-        read_touch.touch_sensor_scan(&pca, &mut at42, &mut i2c).await;
+        read_touch
+            .touch_sensor_scan(&pca, &mut at42, &mut i2c)
+            .await;
 
         // 他のタスクに処理を譲る
         embassy_futures::yield_now().await;
