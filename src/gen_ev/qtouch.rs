@@ -82,7 +82,7 @@ impl Pad {
 #[derive(Clone, Copy, Debug)]
 pub struct TouchPoint<F>
 where
-    F: Fn(u8, u8, u8) + Clone,
+    F: Fn(u8, u8, u8, f32) + Clone,
 {
     center_location: f32,
     intensity: i16,
@@ -95,7 +95,7 @@ where
 }
 impl<F> TouchPoint<F>
 where
-    F: Fn(u8, u8, u8) + Clone,
+    F: Fn(u8, u8, u8, f32) + Clone,
 {
     const NEW_NOTE: u8 = 0xff;
     const TOUCH_POINT_ERROR: u8 = 0xfe;
@@ -134,24 +134,23 @@ where
         }
     }*/
     fn new_touch(&mut self, location: f32, intensity: i16, callback: F) {
-        let crnt_note = self.new_location(Self::NEW_NOTE, location);
-        if crnt_note == Self::TOUCH_POINT_ERROR {
-            return;
-        }
-        self.center_location = location;
-        self.real_crnt_note = crnt_note; // Set the current note
-        self.intensity = intensity;
-        self.is_updated = true;
-        self.is_touched = true;
-        self.touching_time = 0; // Reset the touching time
-        self.midi_callback = Some(callback);
-        // MIDI Note On
-        if let Some(ref midi_callback) = self.midi_callback {
-            midi_callback(
-                0x9c,
-                self.real_crnt_note + Self::OFFSET_NOTE,
-                self.intensity_to_velocity(self.intensity),
-            );
+        if let Ok(crnt_note) = self.new_location(Self::NEW_NOTE, location) {
+            self.center_location = location;
+            self.real_crnt_note = crnt_note; // Set the current note
+            self.intensity = intensity;
+            self.is_updated = true;
+            self.is_touched = true;
+            self.touching_time = 0; // Reset the touching time
+            self.midi_callback = Some(callback);
+            // MIDI Note On
+            if let Some(ref midi_callback) = self.midi_callback {
+                midi_callback(
+                    constants::RINGLED_CMD_TX_ON,
+                    self.real_crnt_note + Self::OFFSET_NOTE,
+                    self.intensity_to_velocity(self.intensity),
+                    self.center_location,
+                );
+            }
         }
     }
     /// タッチポイントが近いかどうかを判断する
@@ -191,21 +190,25 @@ where
         self.intensity = intensity as i16;
         self.is_updated = true;
         self.is_touched = true;
-        let updated_note = self.new_location(self.real_crnt_note, location);
-        if updated_note == Self::TOUCH_POINT_ERROR {
-            return;
-        }
-        // MIDI Note On & Off
-        if let Some(ref midi_callback) = self.midi_callback
-            && updated_note != self.real_crnt_note
-        {
-            midi_callback(
-                0x9c,
-                updated_note + Self::OFFSET_NOTE,
-                self.intensity_to_velocity(self.intensity),
-            );
-            midi_callback(0x8c, self.real_crnt_note + Self::OFFSET_NOTE, 0x40);
-            self.real_crnt_note = updated_note; // Update the current note
+        if let Ok(updated_note) = self.new_location(self.real_crnt_note, location) {
+            // MIDI Note On & Off
+            if let Some(ref midi_callback) = self.midi_callback
+                && updated_note != self.real_crnt_note
+            {
+                midi_callback(
+                    constants::RINGLED_CMD_TX_ON,
+                    updated_note + Self::OFFSET_NOTE,
+                    self.intensity_to_velocity(self.intensity),
+                    self.center_location,
+                );
+                midi_callback(
+                    constants::RINGLED_CMD_TX_OFF,
+                    self.real_crnt_note + Self::OFFSET_NOTE,
+                    0x40,
+                    self.center_location,
+                );
+                self.real_crnt_note = updated_note; // Update the current note
+            }
         }
     }
     /// タッチポイントが離れたときの処理
@@ -231,7 +234,12 @@ where
         }
         // MIDI Note Off
         if let Some(ref midi_callback) = self.midi_callback {
-            midi_callback(0x8c, self.real_crnt_note + Self::OFFSET_NOTE, 0x40);
+            midi_callback(
+                constants::RINGLED_CMD_TX_OFF,
+                self.real_crnt_note + Self::OFFSET_NOTE,
+                0x40,
+                self.center_location,
+            );
         }
         self.is_touched = false;
         self.center_location = Self::INIT_VAL;
@@ -278,7 +286,7 @@ where
             return TOUCH_POINT_ERROR;
         }
     }*/
-    fn new_location(&self, crnt_note: u8, location: f32) -> u8 {
+    fn new_location(&self, crnt_note: u8, location: f32) -> Result<u8, u8> {
         // Manual round implementation for no_std
         fn round(x: f32) -> f32 {
             if x >= 0.0 {
@@ -296,19 +304,19 @@ where
             location
         };
         if crnt_note == Self::NEW_NOTE {
-            round(location) as u8 // Round to nearest integer for MIDI note
+            Ok(round(location) as u8) // Round to nearest integer for MIDI note
         } else if crnt_note < MAX_PADS as u8 {
             if (location > (crnt_note as f32 + HISTERESIS))
                 || (location < (crnt_note as f32 - HISTERESIS))
             {
                 // histeresis
-                round(location) as u8
+                Ok(round(location) as u8)
             } else {
-                crnt_note // No change in note
+                Ok(crnt_note) // No change in note
             }
         } else {
             // Invalid note number, return TOUCH_POINT_ERROR
-            Self::TOUCH_POINT_ERROR
+            Err(Self::TOUCH_POINT_ERROR)
         }
     }
     /*auto intensity_to_velocity(int16_t intensity) const -> uint8_t {
@@ -337,7 +345,7 @@ where
 #[derive(Clone, Copy, Debug)]
 pub struct QubitTouch<F>
 where
-    F: Fn(u8, u8, u8) + Clone,
+    F: Fn(u8, u8, u8, f32) + Clone,
 {
     pads: [Pad; MAX_PADS as usize], // パッドの状態を保持する配列
     touch_points: [TouchPoint<F>; MAX_TOUCH_POINTS], // Store detected touch points
@@ -347,7 +355,7 @@ where
 }
 impl<F> QubitTouch<F>
 where
-    F: Fn(u8, u8, u8) + Clone,
+    F: Fn(u8, u8, u8, f32) + Clone,
 {
     pub fn new(cb: F) -> Self {
         QubitTouch {
